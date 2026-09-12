@@ -54,3 +54,14 @@ For Software:
 # Installation
 ```bash
 npm install
+```
+
+
+# Screenshots (Add at least 3)
+<img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM" src="https://github.com/user-attachments/assets/9df12ff7-893e-4c59-8da6-8a112a62297c" />
+
+<img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM (1)" src="https://github.com/user-attachments/assets/f089d957-8580-4ccc-9346-2f9bf023f546" />
+
+<img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM (2)" src="https://github.com/user-attachments/assets/2f757383-b043-4600-b2d0-2347f1b8a63b" />
+
+<img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM (3)" src="https://github.com/user-attachments/assets/330d02b0-218b-42a1-8804-f7e6f85e4e9a" />
