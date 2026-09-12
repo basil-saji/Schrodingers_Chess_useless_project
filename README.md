@@ -26,7 +26,7 @@ We kept the familiar chess board, pieces, starting positions and appearance — 
 
 At the beginning of every game, the standard movement powers are randomly shuffled among the pieces while maintaining the normal number of each power. Your own pieces reveal their actual movement through their legal moves, while your opponent's powers remain hidden.
 
-The computer opponent also plays under the same hidden-information concept instead of simply being given perfect knowledge of everything.
+The computer opponent also plays under the hidden-information concept instead of simply being given perfect knowledge of everything.
 
 The result is chess where you know the rules, recognize every piece, and still have absolutely no idea what you're looking at.
 
@@ -52,12 +52,15 @@ For Hardware:
 For Software:
 
 # Installation
+
+### 1. Clone the repository
 ```bash
-npm install
+git clone <repository-url>
+cd <repository-folder>
+
 ```
 
-
-# Screenshots (Add at least 3)
+# Screenshots (Add at least 3) 
 <img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM" src="https://github.com/user-attachments/assets/9df12ff7-893e-4c59-8da6-8a112a62297c" />
 
 <img width="1600" height="900" alt="WhatsApp Image 2026-09-12 at 8 19 51 AM (1)" src="https://github.com/user-attachments/assets/f089d957-8580-4ccc-9346-2f9bf023f546" />
