@@ -57,6 +57,7 @@ For Software:
 ```bash
 git clone <repository-url>
 cd <repository-folder>
+npm run dev
 
 ```
 
