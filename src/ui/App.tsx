@@ -1,19 +1,21 @@
 import { useState } from 'react';
 import { applyMove, chooseAiMove, createBeliefs, createGame, legalMoves, type GameState, type Move, type Piece, type Power, type Side, toPublicState } from '../game/engine';
+import { MultiplayerGame } from './MultiplayerGame';
 
 const glyph: Record<string,string> = { king:'♔', queen:'♕', rook:'♖', bishop:'♗', knight:'♘', pawn:'♙' };
 const powerLabel: Record<Power,string> = { pawn:'Pawn', knight:'Knight', bishop:'Bishop', rook:'Rook', queen:'Queen', king:'King' };
 const initialFiles='abcdefgh';
 
 export function App() {
-  const [screen,setScreen]=useState<'landing'|'game'|'over'>('landing');
+  const [screen,setScreen]=useState<'landing'|'game'|'over'|'multiplayer'>('landing');
   const [game,setGame]=useState<GameState|null>(null); const [selected,setSelected]=useState<Piece|null>(null); const [moves,setMoves]=useState<Move['to'][]>([]); const [thinking,setThinking]=useState(false); const [moveAnimation,setMoveAnimation]=useState(0); const [promotionMove,setPromotionMove]=useState<Move|null>(null);
   const start=()=>{setGame(createGame());setSelected(null);setMoves([]);setPromotionMove(null);setMoveAnimation(0);setScreen('game');};
   const finish=(next:GameState)=>{setGame(next);setSelected(null);setMoves([]);setPromotionMove(null);if(next.lastMove)setMoveAnimation(value=>value+1);if(next.status==='over')setScreen('over');};
   const choosePromotion=(power:Power)=>{if(!game||!promotionMove)return;const next=applyMove(game,{...promotionMove,promotion:power});if(next)finish(next);};
   const makeAiMove=(current:GameState)=>{setThinking(true); window.setTimeout(()=>{const publicState=toPublicState(current,'black');const beliefs=createBeliefs(current,'black');const proposed=chooseAiMove(publicState,beliefs);let next=proposed?applyMove(current,proposed):null; if(!next){const fallback=current.pieces.filter(p=>p.side==='black').flatMap(p=>legalMoves(current,p).map(to=>({from:p.square,to})));const move=fallback[0];next=move?applyMove(current,move):current;} if(next)finish(next);setThinking(false);},380);};
   const clickSquare=(row:number,col:number)=>{if(!game||game.status==='over'||thinking||game.turn!=='white'||promotionMove)return;const piece=game.pieces.find(p=>p.square.row===row&&p.square.col===col);if(selected){const destination={row,col};if(moves.some(s=>s.row===row&&s.col===col)){const move={from:selected.square,to:destination};if(selected.power==='pawn'&&(row===0||row===7)){setPromotionMove(move);return;}const next=applyMove(game,move);if(next){finish(next);if(next.status==='playing')makeAiMove(next);}return;} if(piece?.side==='white'){setSelected(piece);setMoves(legalMoves(game,piece));}else{setSelected(null);setMoves([]);}}else if(piece?.side==='white'){setSelected(piece);setMoves(legalMoves(game,piece));}};
-  if(screen==='landing')return <main className="landing-screen"><div className="landing-glow"/><section className="landing-card"><div className="brand-mark">♞</div><p className="eyebrow">Human vs. AI · Hidden powers</p><h1>Schrödinger&apos;s<br/><em>Chess</em></h1><p className="landing-copy">Every piece looks familiar.<br/>Nothing moves the way you expect.</p><button className="primary-button" onClick={start}>PLAY <span>→</span></button><p className="foundation-note">A game of uncertainty and deduction</p></section></main>;
+  if(screen==='landing')return <main className="landing-screen"><div className="landing-glow"/><section className="landing-card"><div className="brand-mark">♞</div><p className="eyebrow">Human versus AI · Hidden powers</p><h1>Schrödinger&apos;s<br/><em>Chess</em></h1><p className="landing-copy">Every piece looks familiar.<br/>Nothing moves the way you expect.</p><div className="mode-buttons"><button className="primary-button" onClick={start}>SINGLEPLAYER <span>→</span></button><button className="secondary-button" onClick={()=>setScreen('multiplayer')}>MULTIPLAYER <span>↗</span></button></div><p className="foundation-note">A game of uncertainty and deduction</p></section></main>;
+  if(screen==='multiplayer')return <MultiplayerGame onExit={()=>setScreen('landing')}/>;
   if(!game)return null;
   if(screen==='over')return <GameOver game={game} onPlay={start}/>;
   const selectedId=selected?.id;const checked=game.pieces.find(p=>p.side===game.turn&&p.power==='king');
