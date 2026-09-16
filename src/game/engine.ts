@@ -6,9 +6,9 @@ export type Piece = { id: string; side: Side; visual: Visual; power: Power; squa
 export type Move = { from: Square; to: Square; promotion?: Power };
 export type CastlingRights = { white: { kingSide: boolean; queenSide: boolean }; black: { kingSide: boolean; queenSide: boolean } };
 export type EnPassantState = { target: Square; captureSquare: Square; pawnId: string };
-export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number };
+export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number> };
 export type PublicPiece = Omit<Piece, 'power'> & { power?: Power };
-export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; moveNumber: number };
+export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; moveNumber: number; promotionsCount: Record<Side, number> };
 
 const powers: Power[] = ['pawn','pawn','pawn','pawn','pawn','pawn','pawn','pawn','knight','knight','bishop','bishop','rook','rook','queen','king'];
 const back: Visual[] = ['rook','knight','bishop','queen','king','bishop','knight','rook'];
@@ -30,7 +30,7 @@ export function createGame():GameState{
     back.forEach((visual,col)=>pieces.push({id:`${side}-${visual}-${col}`,side,visual,power:assigned[col],square:{row:home,col},hasMoved:false}));
     for(let col=0;col<8;col+=1)pieces.push({id:`${side}-pawn-${col}`,side,visual:'pawn',power:assigned[8+col],square:{row:pawnRow,col},hasMoved:false});
   });
-  return {pieces,turn:'white',history:[],castling:freshCastling(),status:'playing',moveNumber:1};
+  return {pieces,turn:'white',history:[],castling:freshCastling(),status:'playing',moveNumber:1,promotionsCount:{white:0,black:0}};
 }
 function at(state:GameState,square:Square){return state.pieces.find(piece=>same(piece.square,square));}
 function ray(state:GameState,piece:Piece,directions:Square[],attacks=false){const result:Square[]=[];directions.forEach(delta=>{let square={row:piece.square.row+delta.row,col:piece.square.col+delta.col};while(inside(square)){const target=at(state,square);if(!target)result.push({...square});else{if(target.side!==piece.side&&(attacks||target.power!=='king'))result.push({...square});break;}square={row:square.row+delta.row,col:square.col+delta.col};}});return result;}
@@ -89,17 +89,117 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   if(promotion&&!['queen','rook','bishop','knight'].includes(promotion))return null;
   const next=simulate(state,piece,move.to,promotion), nextTurn=other(state.turn), nextCastling=updateCastling(state.castling,piece,captured), nextEnPassant=doublePawn(piece,move.to)?{target:{row:(piece.square.row+move.to.row)/2,col:move.to.col},captureSquare:{...move.to},pawnId:piece.id}:undefined;
   const recorded={...move,promotion}, future={...next,turn:nextTurn,castling:nextCastling,enPassant:nextEnPassant};const moves=allLegalMoves(future,nextTurn), checked=inCheck(future,nextTurn), status=moves.length?'playing':'over';
-  return {...future,lastMove:recorded,history:[...state.history,recorded],moveNumber:state.moveNumber+(state.turn==='black'?1:0),status,winner:status==='over'&&checked?state.turn:undefined,reason:status==='over'?(checked?'Checkmate':'Stalemate'):undefined};
+  const promotionsCount = state.promotionsCount ?? {white:0,black:0};
+  return {...future,lastMove:recorded,history:[...state.history,recorded],moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:status==='over'&&checked?state.turn:undefined,reason:status==='over'?(checked?'Checkmate':'Stalemate'):undefined};
 }
-export function toPublicState(state:GameState,observer:Side):PublicState{return{pieces:state.pieces.map(piece=>piece.side===observer?{...piece}:{...piece,power:undefined}),turn:state.turn,lastMove:state.lastMove,moveNumber:state.moveNumber};}
-export type BeliefState=Record<string,Power[]>;
-export function createBeliefs(state:GameState,observer:Side):BeliefState{const candidates:Power[]=['pawn','knight','bishop','rook','queen','king'];return Object.fromEntries(state.pieces.filter(piece=>piece.side!==observer).map(piece=>[piece.id,candidates]));}
-export function chooseAiMove(publicState:PublicState,_beliefs:BeliefState):Move|null{
-  const mine=publicState.pieces.filter(piece=>piece.side==='black'&&piece.power),occupied=new Set(publicState.pieces.map(piece=>key(piece.square))),candidates:Move[]=[];
-  mine.forEach(piece=>{const add=(square:Square)=>{if(!inside(square))return;const target=publicState.pieces.find(candidate=>same(candidate.square,square));if((!target||target.side==='white')&&!(piece.power==='pawn'&&square.col!==piece.square.col&&!target))candidates.push({from:piece.square,to:square});};
-    if(piece.power==='king'||piece.power==='knight'){const offsets=piece.power==='king'?[...diagonals,...orthogonals]:[{row:-2,col:-1},{row:-2,col:1},{row:-1,col:-2},{row:-1,col:2},{row:1,col:-2},{row:1,col:2},{row:2,col:-1},{row:2,col:1}];offsets.forEach(offset=>add({row:piece.square.row+offset.row,col:piece.square.col+offset.col}));}
-    else if(piece.power==='pawn'){add({row:piece.square.row+1,col:piece.square.col});add({row:piece.square.row+1,col:piece.square.col-1});add({row:piece.square.row+1,col:piece.square.col+1});}
-    else{const directions=piece.power==='bishop'?diagonals:piece.power==='rook'?orthogonals:[...diagonals,...orthogonals];directions.forEach(delta=>{for(let distance=1;distance<8;distance+=1){const square={row:piece.square.row+delta.row*distance,col:piece.square.col+delta.col*distance};if(!inside(square))break;const target=publicState.pieces.find(candidate=>same(candidate.square,square));if(target){if(target.side==='white')add(square);break;}add(square);}});}
-  });
-  void occupied;return candidates.length?candidates[Math.floor(secureRandom()*candidates.length)]:null;
+
+export type BeliefState = Record<string, Power[] | number | Side> & { promotionsCount: number; observer: Side };
+const allPowers: Power[] = ['pawn','knight','bishop','rook','queen','king'];
+const standardCapacity: Record<Power, number> = {pawn:8,knight:2,bishop:2,rook:2,queen:1,king:1};
+const value: Record<Power, number> = {pawn:100,knight:320,bishop:330,rook:500,queen:900,king:20000};
+
+export function toPublicState(state:GameState,observer:Side):PublicState{return{
+  pieces:state.pieces.map(piece=>piece.side===observer?{...piece}:{...piece,power:undefined}),
+  turn:state.turn,lastMove:state.lastMove,history:state.history,castling:state.castling,enPassant:state.enPassant,
+  moveNumber:state.moveNumber,promotionsCount:state.promotionsCount ?? {white:0,black:0}
+};}
+
+export function createBeliefs(state:GameState,observer:Side):BeliefState{
+  const result:Record<string,Power[]> = {};
+  for(const piece of state.pieces.filter(item=>item.side!==observer)) result[piece.id]=[...allPowers];
+  return Object.assign(result,{promotionsCount:state.promotionsCount?.[other(observer)] ?? 0,observer}) as BeliefState;
+}
+
+function movementShape(power:Power, from:Square, to:Square, state:PublicState):boolean {
+  const dr=to.row-from.row, dc=to.col-from.col, distance=Math.max(Math.abs(dr),Math.abs(dc));
+  if(!inside(to)||(!dr&&!dc)) return false;
+  if(power==='king') return distance===1 || (dr===0&&Math.abs(dc)===2&&from.col===4);
+  if(power==='knight') return Math.abs(dr)*Math.abs(dc)===2;
+  if(power==='pawn') return dc===0 ? (dr===direction('white') || dr===2*direction('white')) : Math.abs(dc)===1&&dr===direction('white');
+  const diagonal=Math.abs(dr)===Math.abs(dc), straight=dr===0||dc===0;
+  if(power==='bishop'&&!diagonal || power==='rook'&&!straight || power==='queen'&&!(diagonal||straight)) return false;
+  if(power==='bishop'||power==='rook'||power==='queen'){
+    const step={row:Math.sign(dr),col:Math.sign(dc)}; for(let i=1;i<distance;i++) if(state.pieces.some(piece=>same(piece.square,{row:from.row+step.row*i,col:from.col+step.col*i}))) return false;
+  }
+  return true;
+}
+
+/** Incorporates only public evidence; it never turns a belief into engine ground truth. */
+export function updateBeliefs(previousBeliefs:BeliefState, previous:PublicState, current:PublicState):BeliefState {
+  const next:Record<string,Power[]> = Object.fromEntries(Object.entries(previousBeliefs).filter(([id])=>id!=='promotionsCount'&&id!=='observer').map(([id,candidates])=>[id,[...(candidates as Power[])]]));
+  let promotionsCount=previousBeliefs.promotionsCount;
+  const move=current.lastMove; if(!move) return Object.assign(next,{promotionsCount:previousBeliefs.promotionsCount,observer:previousBeliefs.observer}) as BeliefState;
+  const moved=previous.pieces.find(piece=>same(piece.square,move.from));
+  if(moved?.side===other(previousBeliefs.observer)){
+    const candidates=next[moved.id] ?? [...allPowers];
+    next[moved.id]=candidates.filter(power=>movementShape(power,move.from,move.to,previous));
+    const wasEmpty=!previous.pieces.some(piece=>same(piece.square,move.to));
+    if(wasEmpty&&Math.abs(move.to.col-move.from.col)===1&&Math.abs(move.to.row-move.from.row)===1) next[moved.id]=['pawn'];
+    if(Math.abs(move.to.col-move.from.col)===2&&move.from.col===4){
+      next[moved.id]=['king'];
+      const rookFrom={row:move.from.row,col:move.to.col===6?7:0}; const rook=previous.pieces.find(piece=>same(piece.square,rookFrom)); if(rook) next[rook.id]=['rook'];
+    }
+    if((move.to.row===0||move.to.row===7)&&next[moved.id]?.includes('pawn')){next[moved.id]=['queen','rook','bishop','knight']; promotionsCount+=1;}
+  }
+  return Object.assign(next,{promotionsCount,observer:previousBeliefs.observer}) as unknown as BeliefState;
+}
+
+function worldFromPublic(publicState:PublicState):GameState {
+  return {pieces:publicState.pieces.map(piece=>({...piece,power:piece.power ?? 'pawn'})),turn:publicState.turn,lastMove:publicState.lastMove,history:publicState.history,castling:publicState.castling,enPassant:publicState.enPassant,status:'playing',moveNumber:publicState.moveNumber,promotionsCount:publicState.promotionsCount};
+}
+
+/** Completes hidden powers subject to candidate sets and per-side global capacities. */
+export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, count=5):GameState[] {
+  const hidden=publicState.pieces.filter(piece=>piece.power===undefined);
+  const worlds:GameState[]=[]; const limits={...standardCapacity};
+  for(const power of ['queen','rook','bishop','knight'] as Power[]) limits[power]+=beliefs.promotionsCount;
+  limits.pawn+=beliefs.promotionsCount;
+  for(let attempt=0;attempt<count*12&&worlds.length<count;attempt++){
+    const used:Record<Power,number>={pawn:0,knight:0,bishop:0,rook:0,queen:0,king:0};
+    const assignment:Record<string,Power>={}; let valid=true;
+    const hiddenSide=hidden[0]?.side;
+    for(const piece of publicState.pieces.filter(item=>item.power!==undefined&&item.side===hiddenSide)) used[piece.power!]+=1;
+    const shuffled=[...hidden].sort(()=>secureRandom()-.5);
+    const assign=(index:number):boolean=>{if(index===shuffled.length)return used.king===1; const piece=shuffled[index];
+      const options=((beliefs[piece.id] as Power[]|undefined)??allPowers).filter(power=>used[power]<limits[power]).sort(()=>secureRandom()-.5);
+      for(const chosen of options){assignment[piece.id]=chosen;used[chosen]+=1;if(assign(index+1))return true;used[chosen]-=1;delete assignment[piece.id];} return false;
+    };
+    valid=assign(0);
+    if(!valid||used.king!==1) continue;
+    const base=worldFromPublic(publicState); worlds.push({...base,pieces:base.pieces.map(piece=>piece.power==='pawn'&&assignment[piece.id]?{...piece,power:assignment[piece.id]}:assignment[piece.id]?{...piece,power:assignment[piece.id]}:piece)});
+  }
+  return worlds.length?worlds:[worldFromPublic(publicState)];
+}
+
+const knightPst=[-50,-40,-30,-30,-30,-30,-40,-50,-40,-20,0,5,5,0,-20,-40,-30,5,10,15,15,10,5,-30,-30,0,15,20,20,15,0,-30,-30,5,15,20,20,15,5,-30,-30,0,10,15,15,10,0,-30,-40,-20,0,0,0,0,-20,-40,-50,-40,-30,-30,-30,-30,-40,-50];
+function pstBonus(piece:Piece):number { const index=piece.square.row*8+piece.square.col; if(piece.power==='knight') return knightPst[piece.side==='white'?index:56-(index-index%8)+index%8]; if(piece.power==='pawn') return (piece.side==='black'?piece.square.row:7-piece.square.row)*8; return 0; }
+
+export function evaluateChampion(state:GameState,forSide:Side='black'):number {
+  const enemy=other(forSide); let score=0;
+  for(const piece of state.pieces){const sign=piece.side===forSide?1:-1; let contribution=value[piece.power]+pstBonus(piece);
+    const attacked=isAttacked(state,piece.square,enemy), defended=isAttacked(state,piece.square,piece.side);
+    if(attacked&&!defended) contribution-=value[piece.power]*.8;
+    score+=sign*contribution;
+  }
+  if(inCheck(state,enemy)) score+=120; if(inCheck(state,forSide)) score-=180;
+  return score;
+}
+
+export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity):number {
+  const moves=allLegalMoves(state,state.turn); if(depth<=0||!moves.length) return evaluateChampion(state);
+  const maximizing=state.turn==='black'; let best=maximizing?-Infinity:Infinity;
+  for(const move of moves){const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta);
+    if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha) break;
+  } return best;
+}
+
+export function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Move|null {
+  const worlds=sampledWorlds(publicState,beliefs,5), candidates=new Map<string,Move>();
+  for(const world of worlds) for(const move of allLegalMoves(world,'black')) candidates.set(`${key(move.from)}-${key(move.to)}`,move);
+  let best:Move|null=null,bestScore=-Infinity;
+  for(const move of candidates.values()){
+    let total=0;
+    for(const world of worlds){const next=applyMove(world,move); total+=next?search(next,2):-100000;}
+    const score=total/worlds.length; if(score>bestScore){bestScore=score;best=move;}
+  } return best;
 }
