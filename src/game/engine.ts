@@ -35,7 +35,7 @@ export function createGame():GameState{
 }
 function at(state:GameState,square:Square){return state.pieces.find(piece=>same(piece.square,square));}
 export function positionHash(state:GameState):string{return `${state.turn}|${JSON.stringify(state.castling)}|${state.enPassant?`${key(state.enPassant.target)}:${state.enPassant.pawnId}`:'-'}|${state.pieces.map(piece=>`${piece.side}:${piece.power}:${key(piece.square)}`).sort().join(';')}`;}
-function ray(state:GameState,piece:Piece,directions:Square[],attacks=false){const result:Square[]=[];directions.forEach(delta=>{let square={row:piece.square.row+delta.row,col:piece.square.col+delta.col};while(inside(square)){const target=at(state,square);if(!target)result.push({...square});else{if(target.side!==piece.side&&(attacks||target.power!=='king'))result.push({...square});break;}square={row:square.row+delta.row,col:square.col+delta.col};}});return result;}
+function ray(state:GameState,piece:Piece,directions:Square[],attacks=false){const result:Square[]=[];directions.forEach(delta=>{let square={row:piece.square.row+delta.row,col:piece.square.col+delta.col};while(inside(square)){const target=at(state,square);if(!target)result.push({...square});else{if(target.side!==piece.side)result.push({...square});break;}square={row:square.row+delta.row,col:square.col+delta.col};}});return result;}
 function castleTarget(piece:Piece,target:Square){return piece.power==='king'&&piece.square.row===rank(piece.side)&&piece.square.col===4&&target.row===piece.square.row&&(target.col===2||target.col===6);}
 function rookColumn(target:Square){return target.col===6?7:0;}
 function canCastle(state:GameState,piece:Piece,target:Square){
@@ -61,13 +61,13 @@ function pseudo(state:GameState,piece:Piece,attacks=false){
   if(piece.power==='rook')return ray(state,piece,orthogonals,attacks);
   if(piece.power==='queen')return ray(state,piece,[...diagonals,...orthogonals],attacks);
   if(piece.power==='king'){
-    const result=[...diagonals,...orthogonals].map(delta=>({row:row+delta.row,col:col+delta.col})).filter(inside).filter(square=>{const target=at(state,square);return !target||target.side!==piece.side&&(attacks||target.power!=='king');});
+    const result=[...diagonals,...orthogonals].map(delta=>({row:row+delta.row,col:col+delta.col})).filter(inside).filter(square=>{const target=at(state,square);return !target||target.side!==piece.side;});
     if(!attacks)[2,-2].forEach(offset=>{const target={row,col:col+offset};if(canCastle(state,piece,target))result.push(target);});
     return result;
   }
-  if(piece.power==='knight')return [{row:-2,col:-1},{row:-2,col:1},{row:-1,col:-2},{row:-1,col:2},{row:1,col:-2},{row:1,col:2},{row:2,col:-1},{row:2,col:1}].map(delta=>({row:row+delta.row,col:col+delta.col})).filter(inside).filter(square=>{const target=at(state,square);return !target||target.side!==piece.side&&target.power!=='king';});
+  if(piece.power==='knight')return [{row:-2,col:-1},{row:-2,col:1},{row:-1,col:-2},{row:-1,col:2},{row:1,col:-2},{row:1,col:2},{row:2,col:-1},{row:2,col:1}].map(delta=>({row:row+delta.row,col:col+delta.col})).filter(inside).filter(square=>{const target=at(state,square);return !target||target.side!==piece.side;});
   const result:Square[]=[];const dir=direction(piece.side);
-  [-1,1].forEach(delta=>{const square={row:row+dir,col:col+delta};const target=inside(square)?at(state,square):undefined;if(inside(square)&&(attacks||(target&&target.side!==piece.side&&target.power!=='king')||enPassantTarget(state,piece,square)))result.push(square);});
+  [-1,1].forEach(delta=>{const square={row:row+dir,col:col+delta};const target=inside(square)?at(state,square):undefined;if(inside(square)&&(attacks||(target&&target.side!==piece.side)||enPassantTarget(state,piece,square)))result.push(square);});
   if(attacks)return result;
   const one={row:row+dir,col};if(inside(one)&&!at(state,one)){result.push(one);const two={row:row+2*dir,col};const start=piece.side==='white'?6:1;if(!piece.hasMoved&&row===start&&inside(two)&&!at(state,two))result.push(two);}
   return result;
@@ -82,7 +82,7 @@ function simulate(state:GameState,piece:Piece,to:Square,promotion?:Power){
   if(castle){const rook=at(state,{row:piece.square.row,col:rookColumn(to)}),rookTarget={row:piece.square.row,col:to.col===6?5:3};if(rook)pieces=pieces.map(candidate=>candidate.id===rook.id?{...candidate,square:rookTarget,hasMoved:true}:candidate);}
   return {...state,pieces};
 }
-export function legalMoves(state:GameState,piece:Piece){return pseudo(state,piece).filter(to=>{const target=at(state,to);return target?.power!=='king'&&!inCheck(simulate(state,piece,to),piece.side);});}
+export function legalMoves(state:GameState,piece:Piece){return pseudo(state,piece).filter(to=>!inCheck(simulate(state,piece,to),piece.side));}
 export function allLegalMoves(state:GameState,side:Side){return state.pieces.filter(piece=>piece.side===side).flatMap(piece=>legalMoves(state,piece).map(to=>({from:piece.square,to})));}
 function updateCastling(rights:CastlingRights,piece:Piece,captured?:Piece){const next:CastlingRights={white:{...rights.white},black:{...rights.black}};if(piece.power==='king'){next[piece.side].kingSide=false;next[piece.side].queenSide=false;}if(piece.power==='rook'&&piece.square.row===rank(piece.side)){if(piece.square.col===7)next[piece.side].kingSide=false;if(piece.square.col===0)next[piece.side].queenSide=false;}if(captured?.power==='rook'&&captured.square.row===rank(captured.side)){if(captured.square.col===7)next[captured.side].kingSide=false;if(captured.square.col===0)next[captured.side].queenSide=false;}return next;}
 export function applyMove(state:GameState,move:Move):GameState|null{
@@ -93,8 +93,9 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   const recorded={...move,promotion}, halfMoveClock=piece.power==='pawn'||!!captured?0:(state.halfMoveClock??0)+1;
   const future={...next,turn:nextTurn,castling:nextCastling,enPassant:nextEnPassant,halfMoveClock};const moves=allLegalMoves(future,nextTurn), checked=inCheck(future,nextTurn);
   const previousCounts=state.positionCounts??{[positionHash(state)]:1}; const nextHash=positionHash(future); const positionCounts={...previousCounts,[nextHash]:(previousCounts[nextHash]??0)+1};
-  const checkmate=!moves.length&&checked; const automaticDraw=!checkmate&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw?'playing':'over';
   const promotionsCount = state.promotionsCount ?? {white:0,black:0};
+  if(captured?.power==='king') return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status:'over',winner:state.turn,reason:'King captured'};
+  const checkmate=!moves.length&&checked; const automaticDraw=!checkmate&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw?'playing':'over';
   const reason=checkmate?'Checkmate':automaticDraw?(halfMoveClock>=100?'Draw by 50-Move Rule':'Draw by Threefold Repetition'):status==='over'?'Stalemate':undefined;
   return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:checkmate?state.turn:undefined,reason};
 }
@@ -139,6 +140,7 @@ export function updateBeliefs(previousBeliefs:BeliefState, previous:PublicState,
   if(moved?.side===other(previousBeliefs.observer)){
     const candidates=next[moved.id] ?? [...allPowers];
     next[moved.id]=candidates.filter(power=>movementShape(power,move.from,move.to,previous,moved.side));
+    if (next[moved.id].length===0) next[moved.id]=['pawn','knight','bishop','rook','queen'];
     const wasEmpty=!previous.pieces.some(piece=>same(piece.square,move.to));
     if(wasEmpty&&Math.abs(move.to.col-move.from.col)===1&&Math.abs(move.to.row-move.from.row)===1) next[moved.id]=['pawn'];
     if(Math.abs(move.to.col-move.from.col)===2&&move.from.col===4){
