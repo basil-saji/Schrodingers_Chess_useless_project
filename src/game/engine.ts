@@ -6,9 +6,9 @@ export type Piece = { id: string; side: Side; visual: Visual; power: Power; squa
 export type Move = { from: Square; to: Square; promotion?: Power };
 export type CastlingRights = { white: { kingSide: boolean; queenSide: boolean }; black: { kingSide: boolean; queenSide: boolean } };
 export type EnPassantState = { target: Square; captureSquare: Square; pawnId: string };
-export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number> };
+export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number>; halfMoveClock?: number; positionCounts?: Record<string, number> };
 export type PublicPiece = Omit<Piece, 'power'> & { power?: Power };
-export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; moveNumber: number; promotionsCount: Record<Side, number> };
+export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; moveNumber: number; promotionsCount: Record<Side, number>; halfMoveClock: number; positionCounts?: Record<string, number> };
 
 const powers: Power[] = ['pawn','pawn','pawn','pawn','pawn','pawn','pawn','pawn','knight','knight','bishop','bishop','rook','rook','queen','king'];
 const back: Visual[] = ['rook','knight','bishop','queen','king','bishop','knight','rook'];
@@ -30,9 +30,11 @@ export function createGame():GameState{
     back.forEach((visual,col)=>pieces.push({id:`${side}-${visual}-${col}`,side,visual,power:assigned[col],square:{row:home,col},hasMoved:false}));
     for(let col=0;col<8;col+=1)pieces.push({id:`${side}-pawn-${col}`,side,visual:'pawn',power:assigned[8+col],square:{row:pawnRow,col},hasMoved:false});
   });
-  return {pieces,turn:'white',history:[],castling:freshCastling(),status:'playing',moveNumber:1,promotionsCount:{white:0,black:0}};
+  const initial={pieces,turn:'white' as Side,history:[],castling:freshCastling(),status:'playing' as const,moveNumber:1,promotionsCount:{white:0,black:0},halfMoveClock:0};
+  return {...initial,positionCounts:{[positionHash(initial)]:1}};
 }
 function at(state:GameState,square:Square){return state.pieces.find(piece=>same(piece.square,square));}
+export function positionHash(state:GameState):string{return `${state.turn}|${JSON.stringify(state.castling)}|${state.enPassant?`${key(state.enPassant.target)}:${state.enPassant.pawnId}`:'-'}|${state.pieces.map(piece=>`${piece.side}:${piece.power}:${key(piece.square)}`).sort().join(';')}`;}
 function ray(state:GameState,piece:Piece,directions:Square[],attacks=false){const result:Square[]=[];directions.forEach(delta=>{let square={row:piece.square.row+delta.row,col:piece.square.col+delta.col};while(inside(square)){const target=at(state,square);if(!target)result.push({...square});else{if(target.side!==piece.side&&(attacks||target.power!=='king'))result.push({...square});break;}square={row:square.row+delta.row,col:square.col+delta.col};}});return result;}
 function castleTarget(piece:Piece,target:Square){return piece.power==='king'&&piece.square.row===rank(piece.side)&&piece.square.col===4&&target.row===piece.square.row&&(target.col===2||target.col===6);}
 function rookColumn(target:Square){return target.col===6?7:0;}
@@ -88,9 +90,13 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   const ep=enPassantTarget(state,piece,move.to), captured=ep?at(state,state.enPassant!.captureSquare):at(state,move.to);const promotionRank=piece.power==='pawn'&&(move.to.row===0||move.to.row===7);const promotion=promotionRank?(move.promotion??'queen'):undefined;
   if(promotion&&!['queen','rook','bishop','knight'].includes(promotion))return null;
   const next=simulate(state,piece,move.to,promotion), nextTurn=other(state.turn), nextCastling=updateCastling(state.castling,piece,captured), nextEnPassant=doublePawn(piece,move.to)?{target:{row:(piece.square.row+move.to.row)/2,col:move.to.col},captureSquare:{...move.to},pawnId:piece.id}:undefined;
-  const recorded={...move,promotion}, future={...next,turn:nextTurn,castling:nextCastling,enPassant:nextEnPassant};const moves=allLegalMoves(future,nextTurn), checked=inCheck(future,nextTurn), status=moves.length?'playing':'over';
+  const recorded={...move,promotion}, halfMoveClock=piece.power==='pawn'||!!captured?0:(state.halfMoveClock??0)+1;
+  const future={...next,turn:nextTurn,castling:nextCastling,enPassant:nextEnPassant,halfMoveClock};const moves=allLegalMoves(future,nextTurn), checked=inCheck(future,nextTurn);
+  const previousCounts=state.positionCounts??{[positionHash(state)]:1}; const nextHash=positionHash(future); const positionCounts={...previousCounts,[nextHash]:(previousCounts[nextHash]??0)+1};
+  const checkmate=!moves.length&&checked; const automaticDraw=!checkmate&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw?'playing':'over';
   const promotionsCount = state.promotionsCount ?? {white:0,black:0};
-  return {...future,lastMove:recorded,history:[...state.history,recorded],moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:status==='over'&&checked?state.turn:undefined,reason:status==='over'?(checked?'Checkmate':'Stalemate'):undefined};
+  const reason=checkmate?'Checkmate':automaticDraw?(halfMoveClock>=100?'Draw by 50-Move Rule':'Draw by Threefold Repetition'):status==='over'?'Stalemate':undefined;
+  return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:checkmate?state.turn:undefined,reason};
 }
 
 export type BeliefState = Record<string, Power[] | number | Side> & { promotionsCount: number; observer: Side };
@@ -101,7 +107,7 @@ const value: Record<Power, number> = {pawn:100,knight:320,bishop:330,rook:500,qu
 export function toPublicState(state:GameState,observer:Side):PublicState{return{
   pieces:state.pieces.map(piece=>piece.side===observer?{...piece}:{...piece,power:undefined}),
   turn:state.turn,lastMove:state.lastMove,history:state.history,castling:state.castling,enPassant:state.enPassant,
-  moveNumber:state.moveNumber,promotionsCount:state.promotionsCount ?? {white:0,black:0}
+  moveNumber:state.moveNumber,promotionsCount:state.promotionsCount ?? {white:0,black:0},halfMoveClock:state.halfMoveClock??0,positionCounts:state.positionCounts
 };}
 
 export function createBeliefs(state:GameState,observer:Side):BeliefState{
@@ -110,12 +116,12 @@ export function createBeliefs(state:GameState,observer:Side):BeliefState{
   return Object.assign(result,{promotionsCount:state.promotionsCount?.[other(observer)] ?? 0,observer}) as BeliefState;
 }
 
-function movementShape(power:Power, from:Square, to:Square, state:PublicState):boolean {
+function movementShape(power:Power, from:Square, to:Square, state:PublicState, side:Side):boolean {
   const dr=to.row-from.row, dc=to.col-from.col, distance=Math.max(Math.abs(dr),Math.abs(dc));
   if(!inside(to)||(!dr&&!dc)) return false;
   if(power==='king') return distance===1 || (dr===0&&Math.abs(dc)===2&&from.col===4);
   if(power==='knight') return Math.abs(dr)*Math.abs(dc)===2;
-  if(power==='pawn') return dc===0 ? (dr===direction('white') || dr===2*direction('white')) : Math.abs(dc)===1&&dr===direction('white');
+  if(power==='pawn') return dc===0 ? (dr===direction(side) || dr===2*direction(side)) : Math.abs(dc)===1&&dr===direction(side);
   const diagonal=Math.abs(dr)===Math.abs(dc), straight=dr===0||dc===0;
   if(power==='bishop'&&!diagonal || power==='rook'&&!straight || power==='queen'&&!(diagonal||straight)) return false;
   if(power==='bishop'||power==='rook'||power==='queen'){
@@ -132,7 +138,7 @@ export function updateBeliefs(previousBeliefs:BeliefState, previous:PublicState,
   const moved=previous.pieces.find(piece=>same(piece.square,move.from));
   if(moved?.side===other(previousBeliefs.observer)){
     const candidates=next[moved.id] ?? [...allPowers];
-    next[moved.id]=candidates.filter(power=>movementShape(power,move.from,move.to,previous));
+    next[moved.id]=candidates.filter(power=>movementShape(power,move.from,move.to,previous,moved.side));
     const wasEmpty=!previous.pieces.some(piece=>same(piece.square,move.to));
     if(wasEmpty&&Math.abs(move.to.col-move.from.col)===1&&Math.abs(move.to.row-move.from.row)===1) next[moved.id]=['pawn'];
     if(Math.abs(move.to.col-move.from.col)===2&&move.from.col===4){
@@ -145,7 +151,7 @@ export function updateBeliefs(previousBeliefs:BeliefState, previous:PublicState,
 }
 
 function worldFromPublic(publicState:PublicState):GameState {
-  return {pieces:publicState.pieces.map(piece=>({...piece,power:piece.power ?? 'pawn'})),turn:publicState.turn,lastMove:publicState.lastMove,history:publicState.history,castling:publicState.castling,enPassant:publicState.enPassant,status:'playing',moveNumber:publicState.moveNumber,promotionsCount:publicState.promotionsCount};
+  return {pieces:publicState.pieces.map(piece=>({...piece,power:piece.power ?? 'pawn'})),turn:publicState.turn,lastMove:publicState.lastMove,history:publicState.history,castling:publicState.castling,enPassant:publicState.enPassant,status:'playing',moveNumber:publicState.moveNumber,promotionsCount:publicState.promotionsCount,halfMoveClock:publicState.halfMoveClock,positionCounts:publicState.positionCounts};
 }
 
 /** Completes hidden powers subject to candidate sets and per-side global capacities. */
@@ -185,28 +191,39 @@ export function evaluateChampion(state:GameState,forSide:Side='black'):number {
   return score;
 }
 
-function moveOrderValue(state:GameState,move:Move):number { const captured=at(state,move.to); return captured?value[captured.power]:0; }
+type SearchContext = { deadline: number; table: Map<string, number>; timedOut: boolean; aiSide: Side };
+function moveOrderValue(state:GameState,move:Move):number { const captured=at(state,move.to); let score=captured?value[captured.power]*10:0; const moving=at(state,move.from); const next=moving?simulate(state,moving,move.to,move.promotion):undefined; if(next&&inCheck(next,other(state.turn))) score+=5000; return score; }
+function positionKey(state:GameState,depth:number){return `${depth}|${state.turn}|${JSON.stringify(state.castling)}|${JSON.stringify(state.enPassant??null)}|${state.pieces.map(piece=>`${piece.id}:${piece.square.row},${piece.square.col},${piece.power},${piece.hasMoved?'1':'0'}`).join(';')}`;}
 
-export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity):number {
-  const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a)); if(depth<=0||!moves.length) return evaluateChampion(state);
-  const maximizing=state.turn==='black'; let best=maximizing?-Infinity:Infinity;
-  for(const move of moves){const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta);
-    if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha) break;
-  } return best;
+export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity,context?:SearchContext):number {
+  if(context&&performance.now()>=context.deadline){context.timedOut=true;return evaluateChampion(state,context.aiSide);}
+  const cached=context?.table.get(positionKey(state,depth)); if(cached!==undefined)return cached;
+  const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a)); if(depth<=0||!moves.length) return evaluateChampion(state,context?.aiSide??'black');
+  const maximizing=state.turn===(context?.aiSide??'black'); let best=maximizing?-Infinity:Infinity; let cutoff=false;
+  for(const move of moves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;} const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta,context);
+    if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha){cutoff=true;break;}
+  } if(context&&!context.timedOut&&!cutoff)context.table.set(positionKey(state,depth),best); return best;
 }
 
 export async function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Promise<Move|null> {
+  const aiSide=beliefs.observer;
+  const startTime=performance.now(), deadline=startTime+200;
   const worlds=sampledWorlds(publicState,beliefs,2), candidates=new Map<string,Move>();
-  for(const world of worlds) for(const move of allLegalMoves(world,'black')) candidates.set(`${key(move.from)}-${key(move.to)}`,move);
+  for(const world of worlds) for(const move of allLegalMoves(world,aiSide)) candidates.set(`${key(move.from)}-${key(move.to)}`,move);
   const orderedCandidates=[...candidates.values()].sort((a,b)=>{
     const world=worlds[0]; return moveOrderValue(world,b)-moveOrderValue(world,a);
   });
-  let best:Move|null=null,bestScore=-Infinity;
-  for(let index=0;index<orderedCandidates.length;index+=1){
-    if(index%4===0) await new Promise<void>(resolve=>setTimeout(resolve,0));
-    const move=orderedCandidates[index];
-    let total=0;
-    for(const world of worlds){const next=applyMove(world,move); total+=next?search(next,2):-100000;}
-    const score=total/worlds.length; if(score>bestScore){bestScore=score;best=move;}
-  } return best;
+  let best:Move|null=orderedCandidates[0]??null;
+  for(let depth=1;depth<=8;depth+=1){
+    const context:SearchContext={deadline,table:new Map(),timedOut:false,aiSide}; let depthBest:Move|null=null,depthScore=-Infinity;
+    for(let index=0;index<orderedCandidates.length;index+=1){
+      if(performance.now()-startTime>200){context.timedOut=true;break;}
+      if(index%3===0) await new Promise<void>(resolve=>setTimeout(resolve,0));
+      const move=orderedCandidates[index]; let total=0;
+      for(const world of worlds){const next=applyMove(world,move); total+=next?search(next,depth-1,-Infinity,Infinity,context):-100000; if(context.timedOut)break;}
+      if(context.timedOut)break; const score=total/worlds.length; if(score>depthScore){depthScore=score;depthBest=move;}
+    }
+    if(context.timedOut||!depthBest)break; best=depthBest;
+  }
+  return best;
 }
