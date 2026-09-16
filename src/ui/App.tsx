@@ -33,6 +33,7 @@ export function App() {
   useEffect(() => { mountedRef.current = true; createWorker(); return () => { mountedRef.current = false; epochRef.current += 1; terminateWorker(); }; }, []);
   useEffect(() => { if (screen !== 'game') { epochRef.current += 1; terminateWorker(); setThinking(false); } }, [screen]);
   useEffect(() => { const node = historyScrollRef.current; if (node) node.scrollTop = node.scrollHeight; }, [game?.history.length]);
+  useEffect(() => { if (import.meta.env.DEV && screen === 'game' && game) { const humanKing = game.pieces.find(piece => piece.side === playerSide && piece.power === 'king'); console.debug('[singleplayer check]', { playerSide, inCheck: inCheck(game, playerSide), kingSquare: humanKing?.square }); } }, [game, playerSide, screen]);
   useEffect(() => { if (screen !== 'game' || game?.status !== 'playing') return; const timer = window.setInterval(() => setElapsed(value => value + 1),1000); return () => window.clearInterval(timer); }, [screen,game?.status]);
 
   const finish = (next:GameState) => { if (!mountedRef.current) return; setGame(next); setSelected(null); setMoves([]); setPromotionMove(null); if (next.lastMove) setAnimation(value => value + 1); if (next.status === 'over') setScreen('over'); };

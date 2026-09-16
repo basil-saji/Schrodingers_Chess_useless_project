@@ -5,7 +5,10 @@ import {
   createGame,
   inCheck,
   legalMoves,
+  chooseAiMove,
+  createBeliefs,
   evaluateChampion,
+  toPublicState,
   royal,
   search,
   zobristHash,
@@ -220,6 +223,63 @@ describe('Schrödinger special rules', () => {
     expect(allLegalMoves(stalemate, 'white')).toHaveLength(0);
   });
 
+  it('scores stalemate as a neutral draw instead of rewarding self-stalemate', () => {
+    const stalemate = { ...state([
+      piece('black-royal', 'black', 'king', 6, 5), piece('black-queen', 'black', 'queen', 5, 6),
+      piece('white-royal', 'white', 'king', 7, 7),
+    ], 'white'), status: 'over' as const, reason: 'Stalemate' };
+    const active = state([
+      piece('black-royal', 'black', 'king', 0, 0), piece('black-queen', 'black', 'queen', 3, 3),
+      piece('white-royal', 'white', 'king', 7, 7),
+    ], 'black');
+    expect(allLegalMoves(stalemate, 'white')).toEqual([]);
+    expect(evaluateChampion(stalemate, 'black')).toBe(0);
+    expect(evaluateChampion(active, 'black')).toBeGreaterThan(evaluateChampion(stalemate, 'black'));
+  });
+
+  it('selects a terminal mating capture over material-only alternatives', () => {
+    const game = state([
+      piece('black-royal', 'black', 'king', 0, 7), piece('black-queen', 'black', 'queen', 3, 3),
+      piece('white-royal', 'white', 'king', 7, 7), piece('white-rook', 'white', 'rook', 6, 0),
+    ], 'black');
+    const best = allLegalMoves(game, 'black').find(move => move.from.row === 3 && move.from.col === 3 && move.to.row === 7 && move.to.col === 7);
+    expect(best).toBeDefined();
+    expect(search({ ...game, pieces: game.pieces }, 1)).toBeGreaterThan(500000);
+  });
+
+  it('keeps terminal scores decisive in evaluation and quiescence', () => {
+    const won = { ...state([piece('black-king', 'black', 'king', 0, 0), piece('white-king', 'white', 'king', 7, 7)]), status: 'over' as const, winner: 'black' as Side, reason: 'King captured' };
+    const lost = { ...won, winner: 'white' as Side };
+    const draw = { ...won, winner: undefined, reason: 'Stalemate' };
+    expect(evaluateChampion(won, 'black')).toBe(1000000);
+    expect(search(won, 0)).toBe(1000000);
+    expect(evaluateChampion(lost, 'black')).toBe(-1000000);
+    expect(search(lost, 0)).toBe(-1000000);
+    expect(evaluateChampion(draw, 'black')).toBe(0);
+    expect(search(draw, 0)).toBe(0);
+  });
+
+  it('normalizes ply-dependent mate scores in the transposition table', () => {
+    const game = state([
+      piece('black-royal', 'black', 'king', 0, 7), piece('black-queen', 'black', 'queen', 3, 3),
+      piece('white-royal', 'white', 'king', 7, 7), piece('white-rook', 'white', 'rook', 6, 0),
+    ], 'black');
+    const context = { deadline: performance.now() + 10000, table: new Map<number, number>(), timedOut: false, aiSide: 'black' as Side, killers: new Map<number, string[]>(), history: new Map<string, number>() };
+    const rootScore = search(game, 1, -Infinity, Infinity, context, 0);
+    const deeperScore = search(game, 1, -Infinity, Infinity, context, 4);
+    expect(rootScore).toBeGreaterThan(500000);
+    expect(deeperScore).toBe(rootScore - 4);
+  });
+
+  it('penalizes a valuable undefended piece the enemy king can legally take', () => {
+    const exposed = state([
+      piece('black-royal', 'black', 'king', 0, 0), piece('black-queen', 'black', 'queen', 6, 6),
+      piece('white-royal', 'white', 'king', 7, 7),
+    ], 'white');
+    const safe = { ...exposed, pieces: exposed.pieces.map(item => item.id === 'black-queen' ? { ...item, square: { row: 4, col: 4 } } : item) };
+    expect(evaluateChampion(safe, 'black')).toBeGreaterThan(evaluateChampion(exposed, 'black'));
+  });
+
   it('quiescence sees a hanging high-value piece beyond the nominal leaf', () => {
     const game = state([
       piece('black-king', 'black', 'king', 0, 0), piece('black-rook', 'black', 'rook', 3, 3),
@@ -243,6 +303,21 @@ describe('Schrödinger special rules', () => {
     expect(zobristHash(first)).toBe(zobristHash(equivalent));
     expect(zobristHash(first)).not.toBe(zobristHash({ ...first, pieces: first.pieces.map(item => item.id === 'white-king' ? { ...item, square: { row: 6, col: 4 } } : item) }));
   });
+
+  it('benchmarks a king-and-rook endgame inside the configured search budget', async () => {
+    const game = state([
+      piece('black-royal', 'black', 'king', 2, 2), piece('black-rook', 'black', 'rook', 3, 3),
+      piece('white-royal', 'white', 'king', 7, 7),
+    ], 'black');
+    const publicState = toPublicState(game, 'black');
+    const beliefs = createBeliefs(game, 'black');
+    const started = performance.now();
+    const move = await chooseAiMove(publicState, beliefs);
+    const elapsed = performance.now() - started;
+    console.info(`AI endgame benchmark: ${elapsed.toFixed(1)}ms, move=${move ? 'found' : 'none'}`);
+    expect(move).toBeTruthy();
+    expect(elapsed).toBeLessThan(1300);
+  }, 3000);
 
   it('evaluates by movement power rather than visual identity', () => {
     const visualA = state([
