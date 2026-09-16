@@ -180,31 +180,65 @@ export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, coun
   return worlds.length?worlds:[worldFromPublic(publicState)];
 }
 
-const knightPst=[-50,-40,-30,-30,-30,-30,-40,-50,-40,-20,0,5,5,0,-20,-40,-30,5,10,15,15,10,5,-30,-30,0,15,20,20,15,0,-30,-30,5,15,20,20,15,5,-30,-30,0,10,15,15,10,0,-30,-40,-20,0,0,0,0,-20,-40,-50,-40,-30,-30,-30,-30,-40,-50];
-function pstBonus(piece:Piece):number { const index=piece.square.row*8+piece.square.col; if(piece.power==='knight') return knightPst[piece.side==='white'?index:56-(index-index%8)+index%8]; if(piece.power==='pawn') return (piece.side==='black'?piece.square.row:7-piece.square.row)*8; return 0; }
+const makePst=(power:Power,endgame:boolean)=>Array.from({length:64},(_,index)=>{const row=Math.floor(index/8),col=index%8,center=3.5-Math.max(Math.abs(3.5-row),Math.abs(3.5-col));if(power==='pawn')return (7-row)*(endgame?7:4)+Math.max(0,3-Math.abs(3.5-col));if(power==='knight')return center*(endgame?9:6)-Math.abs(row-3.5)*(endgame?1:2);if(power==='bishop')return center*(endgame?6:4)+(row===col||row+col===7?3:0);if(power==='rook')return (7-row)*(endgame?2:1)+(col===0||col===7?0:2);if(power==='queen')return center*(endgame?3:2);return endgame?center*8:((row>=6?8:0)-Math.max(0,center)*2);});
+const pstMid:Record<Power,number[]>=Object.fromEntries((['pawn','knight','bishop','rook','queen','king'] as Power[]).map(power=>[power,makePst(power,false)])) as Record<Power,number[]>;
+const pstEnd:Record<Power,number[]>=Object.fromEntries((['pawn','knight','bishop','rook','queen','king'] as Power[]).map(power=>[power,makePst(power,true)])) as Record<Power,number[]>;
+const phaseWeight:Record<Power,number>={pawn:0,knight:1,bishop:1,rook:2,queen:4,king:0};
+function gamePhase(state:GameState){return Math.min(1,state.pieces.reduce((sum,piece)=>sum+phaseWeight[piece.power],0)/24);}
+function pstBonus(piece:Piece,phase:number):number{const row=piece.side==='white'?7-piece.square.row:piece.square.row,index=row*8+piece.square.col;return pstMid[piece.power][index]*phase+pstEnd[piece.power][index]*(1-phase);}
+function mobilityScore(state:GameState,side:Side){const weights:Record<Power,number>={pawn:1,knight:2,bishop:3,rook:3,queen:4,king:1};return state.pieces.filter(piece=>piece.side===side).reduce((sum,piece)=>sum+legalMoves(state,piece).length*weights[piece.power],0);}
+function kingSafety(state:GameState,side:Side,phase:number){const king=royal(state,side);if(!king)return 0;const direction=side==='white'?-1:1;let shield=0;for(let offset=-1;offset<=1;offset+=1){const square={row:king.square.row+direction,col:king.square.col+offset};if(state.pieces.some(piece=>piece.side===side&&piece.power==='pawn'&&same(piece.square,square)))shield+=8;}return shield*phase;}
+
+const centerDistance=(square:Square)=>Math.max(Math.abs(3.5-square.row),Math.abs(3.5-square.col));
+const chebyshev=(a:Square,b:Square)=>Math.max(Math.abs(a.row-b.row),Math.abs(a.col-b.col));
+function materialEdge(state:GameState,forSide:Side){const enemy=other(forSide);const sum=(side:Side)=>state.pieces.filter(piece=>piece.side===side).reduce((total,piece)=>total+value[piece.power],0);return sum(forSide)-sum(enemy);}
+function mopUpBonus(state:GameState,forSide:Side){const edge=materialEdge(state,forSide);if(edge<700)return 0;const enemy=other(forSide),myKing=royal(state,forSide),theirKing=royal(state,enemy);if(!myKing||!theirKing)return 0;const scale=Math.min(1,(edge-700)/1300);let bonus=centerDistance(theirKing.square)*12*scale;
+  for(const piece of state.pieces)if(piece.side===forSide&&piece.power==='bishop'){const light=(piece.square.row+piece.square.col)%2===0;const corners:[Square,Square]=light?[{row:0,col:0},{row:7,col:7}]:[{row:0,col:7},{row:7,col:0}];bonus+=(7-Math.min(...corners.map(c=>chebyshev(theirKing.square,c))))*3*scale;}
+  bonus+=(7-chebyshev(myKing.square,theirKing.square))*8*scale;bonus+=(8-legalMoves(state,theirKing).length)*6*scale;if(inCheck(state,enemy))bonus+=40*scale;return bonus;}
+function kingRadiusExposurePenalty(state:GameState,forSide:Side){const enemy=other(forSide),theirKing=royal(state,enemy);if(!theirKing)return 0;let penalty=0;for(const piece of state.pieces){if(piece.side!==forSide||chebyshev(piece.square,theirKing.square)>1)continue;const defended=isAttacked(state,piece.square,forSide),attackedByKing=isAttacked(state,piece.square,enemy);if(attackedByKing&&!defended)penalty+=value[piece.power]*1.5;}return penalty;}
+function stalemateTrap(state:GameState,forSide:Side){const enemy=other(forSide);if(state.turn!==enemy)return 0;return allLegalMoves(state,enemy).length===0&&!inCheck(state,enemy)?-100000:0;}
 
 export function evaluateChampion(state:GameState,forSide:Side='black'):number {
-  const enemy=other(forSide); let score=0;
-  for(const piece of state.pieces){const sign=piece.side===forSide?1:-1; let contribution=value[piece.power]+pstBonus(piece);
+  const enemy=other(forSide); let score=0;const phase=gamePhase(state);
+  for(const piece of state.pieces){const sign=piece.side===forSide?1:-1; let contribution=value[piece.power]+pstBonus(piece,phase);
     const attacked=isAttacked(state,piece.square,enemy), defended=isAttacked(state,piece.square,piece.side);
     if(attacked&&!defended) contribution-=value[piece.power]*.8;
     score+=sign*contribution;
   }
   if(inCheck(state,enemy)) score+=120; if(inCheck(state,forSide)) score-=180;
+  score+=(mobilityScore(state,forSide)-mobilityScore(state,enemy))*((phase*2+1)/3);score+=kingSafety(state,forSide,phase)-kingSafety(state,enemy,phase);
+  score+=mopUpBonus(state,forSide)-mopUpBonus(state,enemy);
+  score-=kingRadiusExposurePenalty(state,forSide);score+=kingRadiusExposurePenalty(state,enemy)*0.6;
+  score+=stalemateTrap(state,forSide)-stalemateTrap(state,enemy);
   return score;
 }
 
-type SearchContext = { deadline: number; table: Map<string, number>; timedOut: boolean; aiSide: Side };
-function moveOrderValue(state:GameState,move:Move):number { const captured=at(state,move.to); let score=captured?value[captured.power]*10:0; const moving=at(state,move.from); const next=moving?simulate(state,moving,move.to,move.promotion):undefined; if(next&&inCheck(next,other(state.turn))) score+=5000; return score; }
-function positionKey(state:GameState,depth:number){return `${depth}|${state.turn}|${JSON.stringify(state.castling)}|${JSON.stringify(state.enPassant??null)}|${state.pieces.map(piece=>`${piece.id}:${piece.square.row},${piece.square.col},${piece.power},${piece.hasMoved?'1':'0'}`).join(';')}`;}
+const zobristTable=new Int32Array(2*64*6+64);let zobristSeed=0x6d2b79f5;for(let index=0;index<zobristTable.length;index+=1){zobristSeed|=0;zobristSeed=(zobristSeed+0x6d2b79f5)|0;let value=zobristSeed;value=Math.imul(value^(value>>>15),1|value);value^=value+Math.imul(value^(value>>>7),61|value);zobristTable[index]=value^(value>>>14);}
+const powerIndex:Record<Power,number>={pawn:0,knight:1,bishop:2,rook:3,queen:4,king:5};
+export function zobristHash(state:GameState):number{let hash=state.turn==='white'?0x9e3779b9:0x85ebca6b;for(const piece of state.pieces){const index=((piece.side==='white'?0:1)*64+piece.square.row*8+piece.square.col)*6+powerIndex[piece.power];hash^=zobristTable[index];if(piece.hasMoved)hash^=zobristTable[768+piece.square.row*8+piece.square.col];}const rights=state.castling;hash^=rights.white.kingSide?0x13579bdf:0;hash^=rights.white.queenSide?0x2468ace0:0;hash^=rights.black.kingSide?0x369c2581:0;hash^=rights.black.queenSide?0x48ace013:0;if(state.enPassant)hash^=zobristTable[768+state.enPassant.target.row*8+state.enPassant.target.col];return hash|0;}
+type SearchContext = { deadline: number; table: Map<number, number>; timedOut: boolean; aiSide: Side; killers: Map<number,string[]>; history: Map<string,number> };
+function isCaptureMove(state:GameState,move:Move):boolean{const target=at(state,move.to);return !!target&&target.side!==state.turn||!!enPassantTarget(state,at(state,move.from)!,move.to);}
+function givesCheckAfter(state:GameState,move:Move):boolean{const next=applyMove(state,move);return !!next&&inCheck(next,next.turn);}
+function quiescence(state:GameState,alpha:number,beta:number,aiSide:Side,depthGuard=6,context?:SearchContext):number{
+  if(context&&performance.now()>=context.deadline){context.timedOut=true;return evaluateChampion(state,aiSide);}
+  const standPat=evaluateChampion(state,aiSide),maximizing=state.turn===aiSide;
+  if(depthGuard<=0)return standPat;
+  if(maximizing){if(standPat>=beta)return beta;alpha=Math.max(alpha,standPat);}else{if(standPat<=alpha)return alpha;beta=Math.min(beta,standPat);}
+  const noisyMoves=allLegalMoves(state,state.turn).filter(move=>isCaptureMove(state,move)||givesCheckAfter(state,move)).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a));
+  for(const move of noisyMoves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;}const next=applyMove(state,move);if(!next)continue;const score=quiescence(next,alpha,beta,aiSide,depthGuard-1,context);if(maximizing){alpha=Math.max(alpha,score);if(alpha>=beta)break;}else{beta=Math.min(beta,score);if(beta<=alpha)break;}}
+  return maximizing?alpha:beta;
+}
+function moveKey(move:Move){return `${key(move.from)}-${key(move.to)}`;}
+function moveOrderValue(state:GameState,move:Move,context?:SearchContext,ply=0):number { const moving=at(state,move.from),captured=at(state,move.to)??(moving&&enPassantTarget(state,moving,move.to)?at(state,state.enPassant!.captureSquare):undefined); let score=captured&&moving?value[captured.power]*10-value[moving.power]:0; const next=moving?simulate(state,moving,move.to,move.promotion):undefined; if(next&&inCheck(next,other(state.turn)))score+=5000; const id=moveKey(move);if(context?.killers.get(ply)?.includes(id))score+=4000;score+=context?.history.get(id)??0;return score; }
+function positionKey(state:GameState,depth:number){return (zobristHash(state)^Math.imul(depth+1,0x45d9f3b))|0;}
 
-export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity,context?:SearchContext):number {
+export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity,context?:SearchContext,ply=0):number {
   if(context&&performance.now()>=context.deadline){context.timedOut=true;return evaluateChampion(state,context.aiSide);}
   const cached=context?.table.get(positionKey(state,depth)); if(cached!==undefined)return cached;
-  const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a)); if(depth<=0||!moves.length) return evaluateChampion(state,context?.aiSide??'black');
+  const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b,context,ply)-moveOrderValue(state,a,context,ply)); if(depth<=0)return quiescence(state,alpha,beta,context?.aiSide??'black',6,context); if(!moves.length)return evaluateChampion(state,context?.aiSide??'black');
   const maximizing=state.turn===(context?.aiSide??'black'); let best=maximizing?-Infinity:Infinity; let cutoff=false;
-  for(const move of moves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;} const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta,context);
-    if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha){cutoff=true;break;}
+  for(const move of moves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;} const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta,context,ply+1);
+    if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha){cutoff=true;if(context&&!isCaptureMove(state,move)){const id=moveKey(move),list=context.killers.get(ply)??[];if(!list.includes(id))context.killers.set(ply,[id,...list].slice(0,2));context.history.set(id,(context.history.get(id)??0)+depth*depth);}break;}
   } if(context&&!context.timedOut&&!cutoff)context.table.set(positionKey(state,depth),best); return best;
 }
 
@@ -216,9 +250,9 @@ export async function chooseAiMove(publicState:PublicState,beliefs:BeliefState):
   const orderedCandidates=[...candidates.values()].sort((a,b)=>{
     const world=worlds[0]; return moveOrderValue(world,b)-moveOrderValue(world,a);
   });
-  let best:Move|null=orderedCandidates[0]??null;
+  let best:Move|null=orderedCandidates[0]??null;const table=new Map<number,number>();
   for(let depth=1;depth<=8;depth+=1){
-    const context:SearchContext={deadline,table:new Map(),timedOut:false,aiSide}; let depthBest:Move|null=null,depthScore=-Infinity;
+    const context:SearchContext={deadline,table,timedOut:false,aiSide,killers:new Map(),history:new Map()}; let depthBest:Move|null=null,depthScore=-Infinity;
     for(let index=0;index<orderedCandidates.length;index+=1){
       if(performance.now()-startTime>200){context.timedOut=true;break;}
       if(index%3===0) await new Promise<void>(resolve=>setTimeout(resolve,0));

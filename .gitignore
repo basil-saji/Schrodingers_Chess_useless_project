@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env.local
+engineUpgrade.md
+implementation_plan_phase_1.md

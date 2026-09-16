@@ -5,7 +5,10 @@ import {
   createGame,
   inCheck,
   legalMoves,
+  evaluateChampion,
   royal,
+  search,
+  zobristHash,
   type CastlingRights,
   type GameState,
   type Piece,
@@ -215,5 +218,38 @@ describe('Schrödinger special rules', () => {
     ]);
     expect(inCheck(stalemate, 'white')).toBe(false);
     expect(allLegalMoves(stalemate, 'white')).toHaveLength(0);
+  });
+
+  it('quiescence sees a hanging high-value piece beyond the nominal leaf', () => {
+    const game = state([
+      piece('black-king', 'black', 'king', 0, 0), piece('black-rook', 'black', 'rook', 3, 3),
+      piece('white-king', 'white', 'king', 7, 7), piece('white-queen', 'white', 'queen', 3, 5),
+    ], 'black');
+    expect(search(game, 0)).toBeGreaterThan(evaluateChampion(game));
+  });
+
+  it('adds a mop-up gradient when materially ahead', () => {
+    const cornered = state([
+      piece('black-king', 'black', 'king', 7, 7), piece('black-queen', 'black', 'queen', 4, 4),
+      piece('white-king', 'white', 'king', 0, 0),
+    ], 'black');
+    const centralized = { ...cornered, pieces: cornered.pieces.map(item => item.id === 'white-king' ? { ...item, square: { row: 3, col: 3 } } : item) };
+    expect(evaluateChampion(cornered)).toBeGreaterThan(evaluateChampion(centralized));
+  });
+
+  it('uses stable internal hashing for equivalent search positions', () => {
+    const first = state([piece('white-king', 'white', 'king', 7, 4), piece('black-king', 'black', 'king', 0, 4)]);
+    const equivalent = state([piece('black-king', 'black', 'king', 0, 4), piece('white-king', 'white', 'king', 7, 4)]);
+    expect(zobristHash(first)).toBe(zobristHash(equivalent));
+    expect(zobristHash(first)).not.toBe(zobristHash({ ...first, pieces: first.pieces.map(item => item.id === 'white-king' ? { ...item, square: { row: 6, col: 4 } } : item) }));
+  });
+
+  it('evaluates by movement power rather than visual identity', () => {
+    const visualA = state([
+      piece('black-king', 'black', 'king', 0, 0), piece('black-rook', 'black', 'rook', 3, 3, 'pawn'),
+      piece('white-king', 'white', 'king', 7, 7),
+    ], 'black');
+    const visualB = { ...visualA, pieces: visualA.pieces.map(item => item.id === 'black-rook' ? { ...item, visual: 'queen' as Power } : item) };
+    expect(evaluateChampion(visualA)).toBe(evaluateChampion(visualB));
   });
 });
