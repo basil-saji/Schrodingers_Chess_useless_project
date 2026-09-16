@@ -149,7 +149,7 @@ function worldFromPublic(publicState:PublicState):GameState {
 }
 
 /** Completes hidden powers subject to candidate sets and per-side global capacities. */
-export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, count=5):GameState[] {
+export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, count=2):GameState[] {
   const hidden=publicState.pieces.filter(piece=>piece.power===undefined);
   const worlds:GameState[]=[]; const limits={...standardCapacity};
   for(const power of ['queen','rook','bishop','knight'] as Power[]) limits[power]+=beliefs.promotionsCount;
@@ -185,19 +185,26 @@ export function evaluateChampion(state:GameState,forSide:Side='black'):number {
   return score;
 }
 
+function moveOrderValue(state:GameState,move:Move):number { const captured=at(state,move.to); return captured?value[captured.power]:0; }
+
 export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity):number {
-  const moves=allLegalMoves(state,state.turn); if(depth<=0||!moves.length) return evaluateChampion(state);
+  const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a)); if(depth<=0||!moves.length) return evaluateChampion(state);
   const maximizing=state.turn==='black'; let best=maximizing?-Infinity:Infinity;
   for(const move of moves){const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta);
     if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha) break;
   } return best;
 }
 
-export function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Move|null {
-  const worlds=sampledWorlds(publicState,beliefs,5), candidates=new Map<string,Move>();
+export async function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Promise<Move|null> {
+  const worlds=sampledWorlds(publicState,beliefs,2), candidates=new Map<string,Move>();
   for(const world of worlds) for(const move of allLegalMoves(world,'black')) candidates.set(`${key(move.from)}-${key(move.to)}`,move);
+  const orderedCandidates=[...candidates.values()].sort((a,b)=>{
+    const world=worlds[0]; return moveOrderValue(world,b)-moveOrderValue(world,a);
+  });
   let best:Move|null=null,bestScore=-Infinity;
-  for(const move of candidates.values()){
+  for(let index=0;index<orderedCandidates.length;index+=1){
+    if(index%4===0) await new Promise<void>(resolve=>setTimeout(resolve,0));
+    const move=orderedCandidates[index];
     let total=0;
     for(const world of worlds){const next=applyMove(world,move); total+=next?search(next,2):-100000;}
     const score=total/worlds.length; if(score>bestScore){bestScore=score;best=move;}
