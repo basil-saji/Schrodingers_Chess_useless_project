@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { createMultiplayerGame, disconnectMultiplayerGame, joinMultiplayerGame, submitMultiplayerMove, syncMultiplayerGame, type MultiplayerSession } from '../multiplayer/api';
+import { applyOptimisticPublicMove, createMultiplayerGame, disconnectMultiplayerGame, joinMultiplayerGame, privateChannelName, submitMultiplayerMove, syncMultiplayerGame, type MultiplayerRealtimePayload, type MultiplayerSession } from '../multiplayer/api';
 import type { Move, Power, PublicPiece, Side, Square } from '../game/engine';
 
 const glyph: Record<string, string> = { king: '♔', queen: '♕', rook: '♖', bishop: '♗', knight: '♘', pawn: '♙' };
@@ -19,21 +19,43 @@ export function MultiplayerGame({ onExit }: Props) {
   const [selected, setSelected] = useState<PublicPiece | null>(null);
   const [promotionMove, setPromotionMove] = useState<Move | null>(null);
   const leaving = useRef(false);
+  const sessionRef = useRef<MultiplayerSession | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const syncInFlight = useRef(false);
 
   const updateSession = (next: MultiplayerSession) => {
     if (leaving.current) return;
+    sessionRef.current = next;
     setSession(next);
     localStorage.setItem('schrodinger-multiplayer-session', JSON.stringify(next));
     setView(next.status === 'waiting' ? 'waiting' : 'game');
   };
-  const sync = async (current: MultiplayerSession) => {
-    if (leaving.current) return;
+  const sync = async (current: MultiplayerSession, force = false) => {
+    if (leaving.current || syncInFlight.current) return;
+    syncInFlight.current = true;
     try {
       const next = await syncMultiplayerGame(current);
-      if (!leaving.current) updateSession({ ...current, ...next });
+      if (leaving.current) return;
+      const latest = sessionRef.current;
+      if (!latest || latest.gameId !== next.gameId) return;
+      if (!force && next.stateVersion < latest.stateVersion) return;
+      updateSession({ ...latest, ...next });
     } catch {
       if (!leaving.current) setError('Connection lost. Try reconnecting.');
+    } finally {
+      syncInFlight.current = false;
     }
+  };
+
+  const applyRealtime = (payload: unknown) => {
+    if (leaving.current || !payload || typeof payload !== 'object') return;
+    const incoming = payload as Partial<MultiplayerRealtimePayload>;
+    const current = sessionRef.current;
+    if (!current || !incoming.gameId || incoming.gameId !== current.gameId || incoming.side !== current.side || typeof incoming.stateVersion !== 'number' || !incoming.state) return;
+    if (incoming.state.pieces.some(piece => piece.side !== current.side && piece.power !== undefined)) return;
+    if (incoming.stateVersion < current.stateVersion) return;
+    updateSession({ ...current, ...incoming } as MultiplayerSession);
+    if (incoming.status) setView(incoming.status === 'waiting' ? 'waiting' : 'game');
   };
 
   useEffect(() => {
@@ -42,45 +64,67 @@ export function MultiplayerGame({ onExit }: Props) {
     try {
       const current = JSON.parse(stored) as MultiplayerSession;
       setBusy(true);
+      sessionRef.current = current;
       sync(current).finally(() => setBusy(false));
     } catch { localStorage.removeItem('schrodinger-multiplayer-session'); }
   }, []);
 
   useEffect(() => {
     if (!session) return;
-    let syncing = false;
-    const refresh = async () => {
-      if (syncing) return;
-      syncing = true;
-      try { await sync(session); } finally { syncing = false; }
+    let cancelled = false;
+    const subscribedSession = session;
+    const subscribe = async () => {
+      const name = await privateChannelName(subscribedSession.gameId, subscribedSession.token);
+      if (cancelled) return;
+      const channel = supabase.channel(name, { config: { private: false } })
+        .on('broadcast', { event: 'state' }, ({ payload }) => applyRealtime(payload))
+        .on('broadcast', { event: 'opponent_joined' }, ({ payload }) => applyRealtime(payload))
+        .subscribe(status => {
+          if (status === 'SUBSCRIBED') {
+            // Recover a join/move committed before this subscription finished.
+            // The in-flight guard keeps reconnect callbacks from multiplying reads.
+            void sync(sessionRef.current ?? subscribedSession);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setError('Realtime connection interrupted. Reconnecting…');
+            void sync(sessionRef.current ?? subscribedSession);
+          }
+        });
+      channelRef.current = channel;
     };
-    const channel = supabase.channel(`game:${session.gameId}`)
-      .on('broadcast', { event: 'state' }, () => void refresh())
-      .on('broadcast', { event: 'opponent_joined' }, () => void refresh())
-      .on('broadcast', { event: 'presence' }, () => void refresh())
-      .subscribe();
-    // Realtime broadcasts can be delayed or missed during a reconnect. Poll
-    // while waiting and while active so both clients converge on the server's
-    // authoritative state even when a broadcast is dropped.
-    const statePoll = session.status === 'waiting' || session.status === 'active'
-      ? window.setInterval(() => void refresh(), 1500)
-      : undefined;
-    const onUnload = () => { void disconnectMultiplayerGame(session); };
+    void subscribe();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void sync(sessionRef.current ?? subscribedSession);
+    };
+    const onUnload = () => { const current = sessionRef.current; if (current) void disconnectMultiplayerGame(current); };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('beforeunload', onUnload);
     return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('beforeunload', onUnload);
-      if (statePoll !== undefined) window.clearInterval(statePoll);
-      void supabase.removeChannel(channel);
+      if (channelRef.current) {
+        const channel = channelRef.current;
+        channelRef.current = null;
+        void supabase.removeChannel(channel);
+      }
     };
-  }, [session?.gameId, session?.status]);
+  }, [session?.gameId, session?.token]);
 
   const create = async () => { setBusy(true); setError(''); try { updateSession(await createMultiplayerGame()); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not create game.'); } finally { setBusy(false); } };
   const join = async () => { setBusy(true); setError(''); try { updateSession(await joinMultiplayerGame(joinCode)); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not join game.'); } finally { setBusy(false); } };
   const submit = async (move: Move) => {
     if (!session) return;
-    setBusy(true); setError('');
-    try { updateSession(await submitMultiplayerMove(session, move)); setSelected(null); setPromotionMove(null); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Move rejected.'); await sync(session); }
+    const beforeMove = session;
+    const optimistic: MultiplayerSession = {
+      ...session,
+      state: applyOptimisticPublicMove(session.state, move),
+      stateVersion: session.stateVersion + 1,
+      legalMoves: {},
+    };
+    updateSession(optimistic);
+    setSelected(null); setPromotionMove(null); setBusy(true); setError('');
+    try { updateSession(await submitMultiplayerMove(beforeMove, move)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Move rejected.'); await sync(beforeMove, true); }
     finally { setBusy(false); }
   };
   const returnToMenu = () => {
