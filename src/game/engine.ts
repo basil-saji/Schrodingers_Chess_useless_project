@@ -85,6 +85,7 @@ function simulate(state:GameState,piece:Piece,to:Square,promotion?:Power){
 export function legalMoves(state:GameState,piece:Piece){return pseudo(state,piece).filter(to=>!inCheck(simulate(state,piece,to),piece.side));}
 export function allLegalMoves(state:GameState,side:Side){return state.pieces.filter(piece=>piece.side===side).flatMap(piece=>legalMoves(state,piece).map(to=>({from:piece.square,to})));}
 function updateCastling(rights:CastlingRights,piece:Piece,captured?:Piece){const next:CastlingRights={white:{...rights.white},black:{...rights.black}};if(piece.power==='king'){next[piece.side].kingSide=false;next[piece.side].queenSide=false;}if(piece.power==='rook'&&piece.square.row===rank(piece.side)){if(piece.square.col===7)next[piece.side].kingSide=false;if(piece.square.col===0)next[piece.side].queenSide=false;}if(captured?.power==='rook'&&captured.square.row===rank(captured.side)){if(captured.square.col===7)next[captured.side].kingSide=false;if(captured.square.col===0)next[captured.side].queenSide=false;}return next;}
+export function isInsufficientMaterial(state:GameState):boolean{const active=state.pieces; if(active.length===2)return active.every(piece=>piece.power==='king'); if(active.length!==3)return false; const nonKings=active.filter(piece=>piece.power!=='king'); return active.filter(piece=>piece.power==='king').length===2&&nonKings.length===1&&(nonKings[0].power==='bishop'||nonKings[0].power==='knight');}
 export function applyMove(state:GameState,move:Move):GameState|null{
   const piece=at(state,move.from);if(!piece||piece.side!==state.turn||!legalMoves(state,piece).some(square=>same(square,move.to)))return null;
   const ep=enPassantTarget(state,piece,move.to), captured=ep?at(state,state.enPassant!.captureSquare):at(state,move.to);const promotionRank=piece.power==='pawn'&&(move.to.row===0||move.to.row===7);const promotion=promotionRank?(move.promotion??'queen'):undefined;
@@ -95,8 +96,8 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   const previousCounts=state.positionCounts??{[positionHash(state)]:1}; const nextHash=positionHash(future); const positionCounts={...previousCounts,[nextHash]:(previousCounts[nextHash]??0)+1};
   const promotionsCount = state.promotionsCount ?? {white:0,black:0};
   if(captured?.power==='king') return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status:'over',winner:state.turn,reason:'King captured'};
-  const checkmate=!moves.length&&checked; const automaticDraw=!checkmate&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw?'playing':'over';
-  const reason=checkmate?'Checkmate':automaticDraw?(halfMoveClock>=100?'Draw by 50-Move Rule':'Draw by Threefold Repetition'):status==='over'?'Stalemate':undefined;
+  const checkmate=!moves.length&&checked; const insufficient=isInsufficientMaterial(future); const automaticDraw=!checkmate&&!insufficient&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw&&!insufficient?'playing':'over';
+  const reason=checkmate?'Checkmate':insufficient?'Draw by Insufficient Material':automaticDraw?(halfMoveClock>=100?'Draw by 50-Move Rule':'Draw by Threefold Repetition'):status==='over'?'Stalemate':undefined;
   return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:checkmate?state.turn:undefined,reason};
 }
 
