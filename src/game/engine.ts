@@ -9,6 +9,7 @@ export type EnPassantState = { target: Square; captureSquare: Square; pawnId: st
 export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number>; halfMoveClock?: number; positionCounts?: Record<string, number> };
 export type PublicPiece = Omit<Piece, 'power'> & { power?: Power };
 export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; moveNumber: number; promotionsCount: Record<Side, number>; halfMoveClock: number; positionCounts?: Record<string, number> };
+export type RandomSource = () => number;
 
 const powers: Power[] = ['pawn','pawn','pawn','pawn','pawn','pawn','pawn','pawn','knight','knight','bishop','bishop','rook','rook','queen','king'];
 const back: Visual[] = ['rook','knight','bishop','queen','king','bishop','knight','rook'];
@@ -20,13 +21,13 @@ const other = (side: Side): Side => side==='white'?'black':'white';
 const key = (s: Square) => `${s.row},${s.col}`;
 const rank = (side: Side) => side==='white'?7:0;
 const direction = (side: Side) => side==='white'?-1:1;
-function secureRandom(){const a=new Uint32Array(1);crypto.getRandomValues(a);return a[0]/2**32;}
-function shuffle<T>(items:T[]){const result=[...items];for(let i=result.length-1;i>0;i-=1){const j=Math.floor(secureRandom()*(i+1));[result[i],result[j]]=[result[j],result[i]];}return result;}
+function secureRandom():number{const a=new Uint32Array(1);crypto.getRandomValues(a);return a[0]/2**32;}
+function shuffle<T>(items:T[],random:RandomSource=secureRandom){const result=[...items];for(let i=result.length-1;i>0;i-=1){const j=Math.floor(random()*(i+1));[result[i],result[j]]=[result[j],result[i]];}return result;}
 const freshCastling=():CastlingRights=>({white:{kingSide:true,queenSide:true},black:{kingSide:true,queenSide:true}});
 
-export function createGame():GameState{
+export function createGame(random:RandomSource=secureRandom):GameState{
   const pieces:Piece[]=[];
-  (['black','white'] as Side[]).forEach(side=>{const home=rank(side), pawnRow=side==='white'?6:1, assigned=shuffle(powers);
+  (['black','white'] as Side[]).forEach(side=>{const home=rank(side), pawnRow=side==='white'?6:1, assigned=shuffle(powers,random);
     back.forEach((visual,col)=>pieces.push({id:`${side}-${visual}-${col}`,side,visual,power:assigned[col],square:{row:home,col},hasMoved:false}));
     for(let col=0;col<8;col+=1)pieces.push({id:`${side}-pawn-${col}`,side,visual:'pawn',power:assigned[8+col],square:{row:pawnRow,col},hasMoved:false});
   });
@@ -158,19 +159,18 @@ function worldFromPublic(publicState:PublicState):GameState {
 }
 
 /** Completes hidden powers subject to candidate sets and per-side global capacities. */
-export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, count=2):GameState[] {
+export function sampledWorlds(publicState:PublicState, beliefs:BeliefState, count=2, random:RandomSource=secureRandom):GameState[] {
   const hidden=publicState.pieces.filter(piece=>piece.power===undefined);
   const worlds:GameState[]=[]; const limits={...standardCapacity};
   for(const power of ['queen','rook','bishop','knight'] as Power[]) limits[power]+=beliefs.promotionsCount;
-  limits.pawn+=beliefs.promotionsCount;
   for(let attempt=0;attempt<count*12&&worlds.length<count;attempt++){
     const used:Record<Power,number>={pawn:0,knight:0,bishop:0,rook:0,queen:0,king:0};
     const assignment:Record<string,Power>={}; let valid=true;
     const hiddenSide=hidden[0]?.side;
     for(const piece of publicState.pieces.filter(item=>item.power!==undefined&&item.side===hiddenSide)) used[piece.power!]+=1;
-    const shuffled=[...hidden].sort(()=>secureRandom()-.5);
+    const shuffled=shuffle(hidden,random);
     const assign=(index:number):boolean=>{if(index===shuffled.length)return used.king===1; const piece=shuffled[index];
-      const options=((beliefs[piece.id] as Power[]|undefined)??allPowers).filter(power=>used[power]<limits[power]).sort(()=>secureRandom()-.5);
+      const options=shuffle(((beliefs[piece.id] as Power[]|undefined)??allPowers).filter(power=>used[power]<limits[power]),random);
       for(const chosen of options){assignment[piece.id]=chosen;used[chosen]+=1;if(assign(index+1))return true;used[chosen]-=1;delete assignment[piece.id];} return false;
     };
     valid=assign(0);
@@ -192,86 +192,252 @@ function kingSafety(state:GameState,side:Side,phase:number){const king=royal(sta
 const centerDistance=(square:Square)=>Math.max(Math.abs(3.5-square.row),Math.abs(3.5-square.col));
 const chebyshev=(a:Square,b:Square)=>Math.max(Math.abs(a.row-b.row),Math.abs(a.col-b.col));
 function materialEdge(state:GameState,forSide:Side){const enemy=other(forSide);const sum=(side:Side)=>state.pieces.filter(piece=>piece.side===side).reduce((total,piece)=>total+value[piece.power],0);return sum(forSide)-sum(enemy);}
-function mopUpBonus(state:GameState,forSide:Side){const edge=materialEdge(state,forSide);if(edge<700||state.pieces.length>10)return 0;const enemy=other(forSide),myKing=royal(state,forSide),theirKing=royal(state,enemy);if(!myKing||!theirKing)return 0;const scale=Math.min(1,(edge-700)/1300);let bonus=centerDistance(theirKing.square)*12*scale;
-  for(const piece of state.pieces)if(piece.side===forSide&&piece.power==='bishop'){const light=(piece.square.row+piece.square.col)%2===0;const corners:[Square,Square]=light?[{row:0,col:0},{row:7,col:7}]:[{row:0,col:7},{row:7,col:0}];bonus+=(7-Math.min(...corners.map(c=>chebyshev(theirKing.square,c))))*3*scale;}
-  bonus+=(7-chebyshev(myKing.square,theirKing.square))*8*scale;bonus+=(8-legalMoves(state,theirKing).length)*6*scale;if(inCheck(state,enemy))bonus+=40*scale;return bonus;}
-function kingRadiusExposurePenalty(state:GameState,forSide:Side){const enemy=other(forSide),theirKing=royal(state,enemy);if(!theirKing)return 0;let penalty=0;for(const piece of state.pieces){if(piece.side!==forSide||chebyshev(piece.square,theirKing.square)!==1)continue;const defended=isAttacked(state,piece.square,forSide),canCapture=legalMoves(state,theirKing).some(square=>same(square,piece.square));if(canCapture&&!defended)penalty+=value[piece.power]*1.5;}return penalty;}
+/** Strong endgame king-hunt: force the enemy king to the edge/corner, restrict mobility, reward checks and piece proximity. */
+function mopUpBonus(state:GameState,forSide:Side){
+  const edge=materialEdge(state,forSide);
+  const pieceCount=state.pieces.length;
+  // Activate once we have a clear material advantage; the scale below already tapers by piece count
+  if(edge<400) return 0;
+  const enemy=other(forSide),myKing=royal(state,forSide),theirKing=royal(state,enemy);
+  if(!myKing||!theirKing) return 0;
+  const scale=Math.min(1.4, Math.max(0.35, (edge-200)/900) * (pieceCount<=8 ? 1.35 : pieceCount<=12 ? 1.1 : 0.85));
+  let bonus=centerDistance(theirKing.square)*18*scale; // push to edge harder
+  // Bishop corner trapping
+  for(const piece of state.pieces)if(piece.side===forSide&&piece.power==='bishop'){
+    const light=(piece.square.row+piece.square.col)%2===0;
+    const corners:Square[]=light?[{row:0,col:0},{row:7,col:7}]:[{row:0,col:7},{row:7,col:0}];
+    bonus+=(7-Math.min(...corners.map(c=>chebyshev(theirKing.square,c))))*5*scale;
+  }
+  // Bring our king closer and reduce enemy king mobility aggressively
+  bonus+=(7-chebyshev(myKing.square,theirKing.square))*12*scale;
+  const enemyKingMoves=legalMoves(state,theirKing).length;
+  bonus+=(8-enemyKingMoves)*10*scale;
+  if(inCheck(state,enemy)) bonus+=70*scale;
+  // Reward every one of our pieces that is close to the enemy king (forces coordination)
+  for(const piece of state.pieces){
+    if(piece.side!==forSide||piece.power==='king') continue;
+    const dist=chebyshev(piece.square,theirKing.square);
+    if(dist<=3) bonus+=(4-dist)*6*scale;
+  }
+  // Extra when opponent is down to king + at most one minor
+  if(pieceCount<=4) bonus+=80*scale;
+  return bonus;
+}
+/** Penalize leaving our own pieces adjacent to enemy king when unprotected. */
+function kingRadiusExposurePenalty(state:GameState,forSide:Side){
+  const enemy=other(forSide),theirKing=royal(state,enemy);
+  if(!theirKing) return 0;
+  let penalty=0;
+  for(const piece of state.pieces){
+    if(piece.side!==forSide||chebyshev(piece.square,theirKing.square)!==1) continue;
+    const defended=isAttacked(state,piece.square,forSide);
+    const canCapture=legalMoves(state,theirKing).some(square=>same(square,piece.square));
+    if(canCapture&&!defended) penalty+=value[piece.power]*1.8;
+  }
+  return penalty;
+}
+/** Heavy penalty for opponent pieces that have infiltrated our half of the board (especially high-value ones). */
+function infiltratorPenalty(state:GameState,forSide:Side):number{
+  const enemy=other(forSide);
+  const ourHome=forSide==='white'?[4,5,6,7]:[0,1,2,3]; // rows that belong more to us
+  let penalty=0;
+  for(const piece of state.pieces){
+    if(piece.side!==enemy) continue;
+    const advanced=ourHome.includes(piece.square.row);
+    if(!advanced) continue;
+    // Base infiltration cost scaled by power value
+    const depthFactor=forSide==='white'?(piece.square.row-3.5):(3.5-piece.square.row);
+    const base=value[piece.power]*0.18 + Math.max(0,depthFactor)*25;
+    // Extra if the infiltrator is currently safe (not under attack) – forces us to eliminate it
+    const underFire=isAttacked(state,piece.square,forSide);
+    penalty+=underFire?base*0.55:base*1.25;
+  }
+  return penalty;
+}
+/** Bonus for attacking high-value enemy pieces (encourages active defence). */
+function attackPressure(state:GameState,forSide:Side):number{
+  const enemy=other(forSide);
+  let pressure=0;
+  for(const piece of state.pieces){
+    if(piece.side!==enemy) continue;
+    if(isAttacked(state,piece.square,forSide)){
+      const defended=isAttacked(state,piece.square,enemy);
+      // Prefer attacking undefended high-value pieces hardest
+      pressure+=value[piece.power]*(defended?0.12:0.35);
+    }
+  }
+  return pressure;
+}
 const DRAW_SCORE=0;
 const MATE_SCORE=1000000;
 
 export function evaluateChampion(state:GameState,forSide:Side='black'):number {
   if(state.status==='over')return state.winner?(state.winner===forSide?MATE_SCORE:-MATE_SCORE):DRAW_SCORE;
   const enemy=other(forSide); let score=0;const phase=gamePhase(state);
-  for(const piece of state.pieces){const sign=piece.side===forSide?1:-1; let contribution=value[piece.power]+pstBonus(piece,phase);
+  for(const piece of state.pieces){
+    const sign=piece.side===forSide?1:-1;
+    let contribution=value[piece.power]+pstBonus(piece,phase);
     const attacked=isAttacked(state,piece.square,enemy), defended=isAttacked(state,piece.square,piece.side);
-    if(attacked&&!defended) contribution-=value[piece.power]*.8;
+    // Stronger hanging-piece logic: almost full value loss when hanging, extra for high-value
+    if(attacked&&!defended){
+      const hangFactor=piece.power==='queen'||piece.power==='rook'?1.05:0.92;
+      contribution-=value[piece.power]*hangFactor;
+    }
     score+=sign*contribution;
   }
-  if(inCheck(state,enemy)) score+=120; if(inCheck(state,forSide)) score-=180;
-  score+=(mobilityScore(state,forSide)-mobilityScore(state,enemy))*((phase*2+1)/3);score+=kingSafety(state,forSide,phase)-kingSafety(state,enemy,phase);
+  // More aggressive check rewards / penalties
+  if(inCheck(state,enemy)) score+=180+Math.round((1-phase)*60);
+  if(inCheck(state,forSide)) score-=220-Math.round(phase*40);
+  score+=(mobilityScore(state,forSide)-mobilityScore(state,enemy))*((phase*2.2+1)/3);
+  score+=kingSafety(state,forSide,phase)-kingSafety(state,enemy,phase);
   score+=mopUpBonus(state,forSide)-mopUpBonus(state,enemy);
-  score-=kingRadiusExposurePenalty(state,forSide);score+=kingRadiusExposurePenalty(state,enemy)*0.6;
+  score-=kingRadiusExposurePenalty(state,forSide);
+  score+=kingRadiusExposurePenalty(state,enemy)*0.7;
+  // Core new terms for the reported problems
+  score-=infiltratorPenalty(state,forSide);           // punish enemy pieces deep on our side
+  score+=infiltratorPenalty(state,enemy)*0.85;       // reward our own infiltration
+  score+=attackPressure(state,forSide)-attackPressure(state,enemy)*0.7;
   return score;
 }
 
 const zobristTable=new Int32Array(2*64*6+64);let zobristSeed=0x6d2b79f5;for(let index=0;index<zobristTable.length;index+=1){zobristSeed|=0;zobristSeed=(zobristSeed+0x6d2b79f5)|0;let value=zobristSeed;value=Math.imul(value^(value>>>15),1|value);value^=value+Math.imul(value^(value>>>7),61|value);zobristTable[index]=value^(value>>>14);}
 const powerIndex:Record<Power,number>={pawn:0,knight:1,bishop:2,rook:3,queen:4,king:5};
 export function zobristHash(state:GameState):number{let hash=state.turn==='white'?0x9e3779b9:0x85ebca6b;for(const piece of state.pieces){const index=((piece.side==='white'?0:1)*64+piece.square.row*8+piece.square.col)*6+powerIndex[piece.power];hash^=zobristTable[index];if(piece.hasMoved)hash^=zobristTable[768+piece.square.row*8+piece.square.col];}const rights=state.castling;hash^=rights.white.kingSide?0x13579bdf:0;hash^=rights.white.queenSide?0x2468ace0:0;hash^=rights.black.kingSide?0x369c2581:0;hash^=rights.black.queenSide?0x48ace013:0;if(state.enPassant)hash^=zobristTable[768+state.enPassant.target.row*8+state.enPassant.target.col];return hash|0;}
-type SearchContext = { deadline: number; table: Map<number, number>; timedOut: boolean; aiSide: Side; killers: Map<number,string[]>; history: Map<string,number> };
-const AI_SEARCH_TIME_BUDGET_MS=1000;
+export type SearchTelemetry = { nodes:number; ttHits:number; ttStores:number; quiescenceNodes:number };
+type SearchContext = { deadline: number; table: Map<number, number>; timedOut: boolean; aiSide: Side; killers: Map<number,string[]>; history: Map<string,number>; telemetry?:SearchTelemetry };
+const AI_SEARCH_TIME_BUDGET_MS=1800; // more time for deeper / more aggressive search
+const DIRECT_SEARCH_TIME_BUDGET_MS=250;
+const QUIESCENCE_DEPTH=4;
 const MATE_TT_THRESHOLD=MATE_SCORE-10000;
 function terminalScore(state:GameState,aiSide:Side,ply:number){if(state.status==='over')return state.winner?(state.winner===aiSide?MATE_SCORE-ply:-MATE_SCORE+ply):DRAW_SCORE;return undefined;}
 function restoreTtScore(score:number,ply:number){return score>=MATE_TT_THRESHOLD?score-ply:score<=-MATE_TT_THRESHOLD?score+ply:score;}
 function storeTtScore(score:number,ply:number){return score>=MATE_TT_THRESHOLD?score+ply:score<=-MATE_TT_THRESHOLD?score-ply:score;}
 function isCaptureMove(state:GameState,move:Move):boolean{const target=at(state,move.to);return !!target&&target.side!==state.turn||!!enPassantTarget(state,at(state,move.from)!,move.to);}
 function givesCheckAfter(state:GameState,move:Move):boolean{const moving=at(state,move.from);if(!moving)return false;const next=simulate(state,moving,move.to,move.promotion);return inCheck(next,other(state.turn));}
-function quiescence(state:GameState,alpha:number,beta:number,aiSide:Side,depthGuard=6,context?:SearchContext,ply=0):number{
+function quiescence(state:GameState,alpha:number,beta:number,aiSide:Side,depthGuard=8,context?:SearchContext,ply=0):number{
+  if(context){context.telemetry??={nodes:0,ttHits:0,ttStores:0,quiescenceNodes:0};context.telemetry.quiescenceNodes+=1;}
   const terminal=terminalScore(state,aiSide,ply);if(terminal!==undefined)return terminal;
   if(context&&performance.now()>=context.deadline){context.timedOut=true;return evaluateChampion(state,aiSide);}
   const moves=allLegalMoves(state,state.turn);if(!moves.length)return inCheck(state,state.turn)?(state.turn===aiSide?-MATE_SCORE+ply:MATE_SCORE-ply):DRAW_SCORE;
-  const standPat=evaluateChampion(state,aiSide),maximizing=state.turn===aiSide;
-  if(depthGuard<=0)return standPat;
-  if(maximizing){if(standPat>=beta)return beta;alpha=Math.max(alpha,standPat);}else{if(standPat<=alpha)return alpha;beta=Math.min(beta,standPat);}
-  const noisyMoves=moves.filter(move=>isCaptureMove(state,move)||givesCheckAfter(state,move)).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a));
+  const maximizing=state.turn===aiSide, evading=inCheck(state,state.turn), standPat=evaluateChampion(state,aiSide);
+  // A side in check cannot "stand pat" - it must resolve the check, even via a quiet move, so every legal evasion is searched.
+  if(!evading){
+    if(depthGuard<=0)return standPat;
+    if(maximizing){if(standPat>=beta)return beta;alpha=Math.max(alpha,standPat);}else{if(standPat<=alpha)return alpha;beta=Math.min(beta,standPat);}
+  }
+  // Prioritise captures of high-value / infiltrating pieces and checks; when in check, every legal escape is a candidate
+  const noisyMoves=(evading?moves:moves.filter(move=>isCaptureMove(state,move)||givesCheckAfter(state,move))).sort((a,b)=>moveOrderValue(state,b)-moveOrderValue(state,a));
+  if(!noisyMoves.length)return standPat;
   for(const move of noisyMoves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;}const next=applyMove(state,move);if(!next)continue;const score=quiescence(next,alpha,beta,aiSide,depthGuard-1,context,ply+1);if(maximizing){alpha=Math.max(alpha,score);if(alpha>=beta)break;}else{beta=Math.min(beta,score);if(beta<=alpha)break;}}
   return maximizing?alpha:beta;
 }
 function moveKey(move:Move){return `${key(move.from)}-${key(move.to)}`;}
-function moveOrderValue(state:GameState,move:Move,context?:SearchContext,ply=0):number { const moving=at(state,move.from),captured=at(state,move.to)??(moving&&enPassantTarget(state,moving,move.to)?at(state,state.enPassant!.captureSquare):undefined); let score=captured&&moving?value[captured.power]*10-value[moving.power]:0; const next=moving?simulate(state,moving,move.to,move.promotion):undefined; if(next&&inCheck(next,other(state.turn)))score+=5000; const id=moveKey(move);if(context?.killers.get(ply)?.includes(id))score+=4000;score+=context?.history.get(id)??0;return score; }
+function moveOrderValue(state:GameState,move:Move,context?:SearchContext,ply=0):number {
+  const moving=at(state,move.from);
+  const captured=at(state,move.to)??(moving&&enPassantTarget(state,moving,move.to)?at(state,state.enPassant!.captureSquare):undefined);
+  let score=0;
+  if(captured&&moving){
+    // MVV-LVA with extra weight on high-value targets and on captures inside our territory
+    score=value[captured.power]*12 - value[moving.power];
+    const ourTerritory=moving.side==='white'?captured.square.row>=4:captured.square.row<=3;
+    if(ourTerritory) score+=value[captured.power]*4; // strongly prefer killing infiltrators
+    if(captured.power==='queen'||captured.power==='rook') score+=800;
+    if(!isAttacked(state,move.to,captured.side)) score+=250; // free/undefended capture: good regardless of guessed power
+  }
+  const next=moving?simulate(state,moving,move.to,move.promotion):undefined;
+  if(next&&inCheck(next,other(state.turn))) score+=6500; // checks first
+  // Prefer moves that attack the enemy king more closely in endgames
+  if(next){
+    const theirKing=royal(next,other(state.turn));
+    if(theirKing&&moving){
+      const before=chebyshev(moving.square,theirKing.square);
+      const after=chebyshev(move.to,theirKing.square);
+      if(after<before) score+=180*(before-after);
+    }
+  }
+  const id=moveKey(move);
+  if(context?.killers.get(ply)?.includes(id)) score+=4500;
+  score+=context?.history.get(id)??0;
+  return score;
+}
 function positionKey(state:GameState,depth:number){return (zobristHash(state)^Math.imul(depth+1,0x45d9f3b))|0;}
 
 export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinity,context?:SearchContext,ply=0):number {
+  if(!context)context={deadline:performance.now()+DIRECT_SEARCH_TIME_BUDGET_MS,table:new Map(),timedOut:false,aiSide:'black',killers:new Map(),history:new Map(),telemetry:{nodes:0,ttHits:0,ttStores:0,quiescenceNodes:0}};
+  context.telemetry??={nodes:0,ttHits:0,ttStores:0,quiescenceNodes:0};
+  context.telemetry.nodes+=1;
   const aiSide=context?.aiSide??'black',terminal=terminalScore(state,aiSide,ply);if(terminal!==undefined)return terminal;
   if(context&&performance.now()>=context.deadline){context.timedOut=true;return evaluateChampion(state,aiSide);}
-  const cached=context?.table.get(positionKey(state,depth)); if(cached!==undefined)return restoreTtScore(cached,ply);
+  const cached=context.table.get(positionKey(state,depth)); if(cached!==undefined){context.telemetry.ttHits+=1;return restoreTtScore(cached,ply);}
   const moves=allLegalMoves(state,state.turn).sort((a,b)=>moveOrderValue(state,b,context,ply)-moveOrderValue(state,a,context,ply));
   if(!moves.length)return inCheck(state,state.turn)?(state.turn===aiSide?-MATE_SCORE+ply:MATE_SCORE-ply):DRAW_SCORE;
-  if(depth<=0)return quiescence(state,alpha,beta,aiSide,6,context,ply);
+  if(depth<=0)return quiescence(state,alpha,beta,aiSide,QUIESCENCE_DEPTH,context,ply);
   const maximizing=state.turn===aiSide; let best=maximizing?-Infinity:Infinity; let cutoff=false;
   for(const move of moves){if(context&&performance.now()>=context.deadline){context.timedOut=true;break;} const next=applyMove(state,move); if(!next) continue; const score=search(next,depth-1,alpha,beta,context,ply+1);
     if(maximizing){best=Math.max(best,score);alpha=Math.max(alpha,best);}else{best=Math.min(best,score);beta=Math.min(beta,best);} if(beta<=alpha){cutoff=true;if(context&&!isCaptureMove(state,move)){const id=moveKey(move),list=context.killers.get(ply)??[];if(!list.includes(id))context.killers.set(ply,[id,...list].slice(0,2));context.history.set(id,(context.history.get(id)??0)+depth*depth);}break;}
-  } if(context&&!context.timedOut&&!cutoff)context.table.set(positionKey(state,depth),storeTtScore(best,ply)); return best;
+  } if(!context.timedOut&&!cutoff){context.table.set(positionKey(state,depth),storeTtScore(best,ply));context.telemetry.ttStores+=1;} return best;
 }
 
-export async function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Promise<Move|null> {
+export type AiSearchReport = { elapsedMs:number; completedDepth:number; nodes:number; ttHits:number; ttStores:number; quiescenceNodes:number; sampledWorlds:number; perWorldRootScores:number[]; finalCandidateScores:Array<{move:Move;perWorld:number[];average:number}>; selectedMove:Move|null; timedOut:boolean; rootCandidates:number };
+export type AiSearchOptions = { random?:RandomSource; timeBudgetMs?:number };
+
+/** Conservative public-information legality gate: a move is allowed only if no
+ * possible hidden power can expose the AI royal piece after the move. */
+function robustRootLegal(publicState:PublicState,beliefs:BeliefState,move:Move):boolean{
+  const base=worldFromPublic(publicState), hidden=publicState.pieces.filter(piece=>piece.power===undefined);
+  for(const piece of hidden){
+    const candidates=(beliefs[piece.id] as Power[]|undefined)??allPowers;
+    for(const power of candidates){
+      const hypothetical={...base,pieces:base.pieces.filter(item=>item.power!==undefined||item.id===piece.id).map(item=>item.id===piece.id?{...item,power}:item)};
+      const next=applyMove(hypothetical,move);
+      if(next&&inCheck(next,beliefs.observer))return false;
+    }
+  }
+  return true;
+}
+
+export async function chooseAiMoveReport(publicState:PublicState,beliefs:BeliefState,options:AiSearchOptions={}):Promise<AiSearchReport> {
   const aiSide=beliefs.observer;
-  const startTime=performance.now(), deadline=startTime+AI_SEARCH_TIME_BUDGET_MS;
-  const worlds=sampledWorlds(publicState,beliefs,2), candidates=new Map<string,Move>();
-  for(const world of worlds) for(const move of allLegalMoves(world,aiSide)) candidates.set(`${key(move.from)}-${key(move.to)}`,move);
-  const orderedCandidates=[...candidates.values()].sort((a,b)=>{
-    const world=worlds[0]; return moveOrderValue(world,b)-moveOrderValue(world,a);
-  });
-  let best:Move|null=orderedCandidates[0]??null;const table=new Map<number,number>();
-  for(let depth=1;depth<=8;depth+=1){
-    const context:SearchContext={deadline,table,timedOut:false,aiSide,killers:new Map(),history:new Map()}; let depthBest:Move|null=null,depthScore=-Infinity;
+  const startTime=performance.now(), deadline=startTime+(options.timeBudgetMs??AI_SEARCH_TIME_BUDGET_MS);
+  // Sample 3 worlds for better belief coverage; still fast enough with improved ordering
+  const worlds=sampledWorlds(publicState,beliefs,3,options.random), candidates=new Map<string,Move>();
+  const legalSets=worlds.map(world=>new Set(allLegalMoves(world,aiSide).map(move=>`${key(move.from)}-${key(move.to)}`)));
+  for(const move of allLegalMoves(worlds[0],aiSide)){
+    const id=`${key(move.from)}-${key(move.to)}`;
+    if(legalSets.every(set=>set.has(id))&&robustRootLegal(publicState,beliefs,move))candidates.set(id,move);
+  }
+  const rootOrderValue=(move:Move)=>Math.max(...worlds.map(world=>moveOrderValue(world,move)));
+  const orderedCandidates=[...candidates.values()].sort((a,b)=>rootOrderValue(b)-rootOrderValue(a));
+  let best:Move|null=orderedCandidates[0]??null;const table=new Map<number,number>();let completedDepth=0;let timedOut=false;let telemetry:SearchTelemetry={nodes:0,ttHits:0,ttStores:0,quiescenceNodes:0};let finalCandidateScores:Array<{move:Move;perWorld:number[];average:number}>=[];
+  // Iterative deepening up to depth 9; aggressive move ordering + stronger eval lets us find the obvious captures and mates faster
+  for(let depth=1;depth<=9;depth+=1){
+    if(best){const priorIndex=orderedCandidates.findIndex(move=>same(move.from,best!.from)&&same(move.to,best!.to));if(priorIndex>0){const [priorMove]=orderedCandidates.splice(priorIndex,1);orderedCandidates.unshift(priorMove);}}
+    const context:SearchContext={deadline,table,timedOut:false,aiSide,killers:new Map(),history:new Map(),telemetry};
+    let depthBest:Move|null=null,depthScore=-Infinity;
+    const depthScores:Array<{move:Move;perWorld:number[];average:number}>=[];
     for(let index=0;index<orderedCandidates.length;index+=1){
       if(performance.now()>=deadline){context.timedOut=true;break;}
       if(index%3===0) await new Promise<void>(resolve=>setTimeout(resolve,0));
-      const move=orderedCandidates[index]; let total=0;
-      for(const world of worlds){const next=applyMove(world,move); total+=next?search(next,depth-1,-Infinity,Infinity,context):-100000; if(context.timedOut)break;}
-      if(context.timedOut)break; const score=total/worlds.length; if(score>depthScore){depthScore=score;depthBest=move;}
+      const move=orderedCandidates[index];
+      let total=0;const perWorld:number[]=[];
+      for(const world of worlds){
+        const next=applyMove(world,move);
+        const score=next?search(next,depth-1,-Infinity,Infinity,context):-100000; perWorld.push(score); total+=score;
+        if(context.timedOut) break;
+      }
+      if(context.timedOut) break;
+      const score=total/worlds.length;
+      depthScores.push({move,perWorld,average:score});
+      if(score>depthScore){depthScore=score;depthBest=move;}
     }
-    if(context.timedOut||!depthBest)break; best=depthBest;
+    if(context.timedOut||!depthBest){timedOut=context.timedOut;break;}
+    best=depthBest;
+    completedDepth=depth;finalCandidateScores=depthScores;
   }
-  return best;
+  const selectedScores=finalCandidateScores.find(item=>best&&same(item.move.from,best.from)&&same(item.move.to,best.to));
+  return {elapsedMs:performance.now()-startTime,completedDepth,nodes:telemetry.nodes,ttHits:telemetry.ttHits,ttStores:telemetry.ttStores,quiescenceNodes:telemetry.quiescenceNodes,sampledWorlds:worlds.length,perWorldRootScores:selectedScores?.perWorld??[],finalCandidateScores,selectedMove:best,timedOut,rootCandidates:orderedCandidates.length};
+}
+
+export async function chooseAiMove(publicState:PublicState,beliefs:BeliefState):Promise<Move|null> {
+  return (await chooseAiMoveReport(publicState,beliefs)).selectedMove;
 }

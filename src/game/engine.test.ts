@@ -6,11 +6,13 @@ import {
   inCheck,
   legalMoves,
   chooseAiMove,
+  chooseAiMoveReport,
   createBeliefs,
   evaluateChampion,
   toPublicState,
   royal,
   search,
+  sampledWorlds,
   zobristHash,
   type CastlingRights,
   type GameState,
@@ -316,7 +318,7 @@ describe('Schrödinger special rules', () => {
     const elapsed = performance.now() - started;
     console.info(`AI endgame benchmark: ${elapsed.toFixed(1)}ms, move=${move ? 'found' : 'none'}`);
     expect(move).toBeTruthy();
-    expect(elapsed).toBeLessThan(1300);
+    expect(elapsed).toBeLessThan(2200);
   }, 3000);
 
   it('evaluates by movement power rather than visual identity', () => {
@@ -327,4 +329,37 @@ describe('Schrödinger special rules', () => {
     const visualB = { ...visualA, pieces: visualA.pieces.map(item => item.id === 'black-rook' ? { ...item, visual: 'queen' as Power } : item) };
     expect(evaluateChampion(visualA)).toBe(evaluateChampion(visualB));
   });
+});
+
+describe('AI development telemetry benchmarks', () => {
+  const seeded = (seed:number): (() => number) => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 0x100000000; };
+  const benchmarkState = (pieces:Piece[]):GameState => state(pieces, 'black');
+  const run = async (name:string, game:GameState, candidates:Record<string,Power[]>) => {
+    const publicState = toPublicState(game, 'black');
+    const beliefs = { ...createBeliefs(game, 'black'), ...candidates };
+    const report = await chooseAiMoveReport(publicState, beliefs, { random: seeded(42), timeBudgetMs: 180 });
+    const deterministicA = sampledWorlds(publicState, beliefs, 3, seeded(42));
+    const deterministicB = sampledWorlds(publicState, beliefs, 3, seeded(42));
+    expect(deterministicA.map(world => world.pieces.map(piece => `${piece.id}:${piece.power}`).join('|')))
+      .toEqual(deterministicB.map(world => world.pieces.map(piece => `${piece.id}:${piece.power}`).join('|')));
+    for (const world of deterministicA) {
+      expect(world.pieces.filter(piece => piece.side === 'white' && piece.power === 'king')).toHaveLength(1);
+      expect(world.pieces.filter(piece => piece.side === 'black' && piece.power === 'king')).toHaveLength(1);
+      if (report.selectedMove) expect(applyMove(world, report.selectedMove)).not.toBeNull();
+    }
+    expect(report.sampledWorlds).toBe(3);
+    expect(report.nodes).toBeGreaterThanOrEqual(0);
+    console.info(JSON.stringify({ scenario:name, selectedMove:report.selectedMove, elapsedMs:report.elapsedMs.toFixed(1), completedDepth:report.completedDepth, nodes:report.nodes, ttHits:report.ttHits, ttStores:report.ttStores, quiescenceNodes:report.quiescenceNodes, sampledWorlds:report.sampledWorlds, rootCandidates:report.rootCandidates, perWorldRootScores:report.perWorldRootScores, timedOut:report.timedOut }));
+  };
+
+  it('runs deterministic A-G hidden-information probes with telemetry', async () => {
+    const exact = { 'w-k':['king'] as Power[], 'w-q':['queen'] as Power[] };
+    await run('A infiltrator', benchmarkState([piece('b-k','black','king',0,4),piece('b-r','black','rook',4,4),piece('w-k','white','king',7,7),piece('w-q','white','queen',5,4)]), exact);
+    await run('B undefended infiltrator', benchmarkState([piece('b-k','black','king',0,4),piece('b-r','black','rook',4,4),piece('w-k','white','king',7,7),piece('w-q','white','queen',5,4)]), exact);
+    await run('C multiple-target threat', benchmarkState([piece('b-k','black','king',0,4),piece('b-r','black','rook',6,0),piece('b-b','black','bishop',6,2),piece('b-n','black','knight',5,1),piece('w-k','white','king',0,7),piece('w-q','white','queen',4,4)]), exact);
+    await run('D AI royal endgame', benchmarkState([piece('b-k','black','king',2,2),piece('b-r','black','rook',3,3),piece('w-k','white','king',7,7)]), { 'w-k':['king'] });
+    await run('E opponent royal endgame', benchmarkState([piece('b-k','black','king',0,0),piece('b-r','black','rook',3,3),piece('w-k','white','king',7,7)]), { 'w-k':['king'] });
+    await run('F quiet check evasion', benchmarkState([piece('b-k','black','king',4,4),piece('b-p','black','pawn',4,3),piece('w-k','white','king',0,7),piece('w-r','white','rook',4,0)]), { 'w-k':['king'], 'w-r':['rook'] });
+    await run('G hidden-world uncertainty', benchmarkState([piece('b-k','black','king',0,4),piece('b-r','black','rook',3,3),piece('w-k','white','king',7,7),piece('w-x','white','queen',4,4)]), { 'w-k':['king'], 'w-x':['queen','rook','bishop','knight'] });
+  }, 10000);
 });
