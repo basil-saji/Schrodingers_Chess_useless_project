@@ -2,11 +2,11 @@ export type Side = 'white' | 'black';
 export type Power = 'pawn' | 'knight' | 'bishop' | 'rook' | 'queen' | 'king';
 export type Visual = Power;
 export type Square = { row: number; col: number };
-export type Piece = { id: string; side: Side; visual: Visual; power: Power; square: Square; hasMoved: boolean };
-export type Move = { from: Square; to: Square; promotion?: Power };
+export type Piece = { id: string; side: Side; visual: Visual; power: Power; square: Square; hasMoved: boolean; initialSquare: Square };
+export type Move = { from: Square; to: Square; promotion?: Power; pieceId?: string; capturedPieceId?: string; isCastling?: boolean; isEnPassant?: boolean };
 export type CastlingRights = { white: { kingSide: boolean; queenSide: boolean }; black: { kingSide: boolean; queenSide: boolean } };
 export type EnPassantState = { target: Square; captureSquare: Square; pawnId: string };
-export type GameState = { pieces: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number>; halfMoveClock?: number; positionCounts?: Record<string, number> };
+export type GameState = { pieces: Piece[]; initialPieces?: Piece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; status: 'playing' | 'over'; winner?: Side; reason?: string; moveNumber: number; promotionsCount?: Record<Side, number>; halfMoveClock?: number; positionCounts?: Record<string, number> };
 export type PublicPiece = Omit<Piece, 'power'> & { power?: Power };
 export type PublicState = { pieces: PublicPiece[]; turn: Side; lastMove?: Move; history: Move[]; castling: CastlingRights; enPassant?: EnPassantState; moveNumber: number; promotionsCount: Record<Side, number>; halfMoveClock: number; positionCounts?: Record<string, number> };
 export type RandomSource = () => number;
@@ -28,11 +28,11 @@ const freshCastling=():CastlingRights=>({white:{kingSide:true,queenSide:true},bl
 export function createGame(random:RandomSource=secureRandom):GameState{
   const pieces:Piece[]=[];
   (['black','white'] as Side[]).forEach(side=>{const home=rank(side), pawnRow=side==='white'?6:1, assigned=shuffle(powers,random);
-    back.forEach((visual,col)=>pieces.push({id:`${side}-${visual}-${col}`,side,visual,power:assigned[col],square:{row:home,col},hasMoved:false}));
-    for(let col=0;col<8;col+=1)pieces.push({id:`${side}-pawn-${col}`,side,visual:'pawn',power:assigned[8+col],square:{row:pawnRow,col},hasMoved:false});
+    back.forEach((visual,col)=>pieces.push({id:`${side}-${visual}-${col}`,side,visual,power:assigned[col],square:{row:home,col},initialSquare:{row:home,col},hasMoved:false}));
+    for(let col=0;col<8;col+=1)pieces.push({id:`${side}-pawn-${col}`,side,visual:'pawn',power:assigned[8+col],square:{row:pawnRow,col},initialSquare:{row:pawnRow,col},hasMoved:false});
   });
   const initial={pieces,turn:'white' as Side,history:[],castling:freshCastling(),status:'playing' as const,moveNumber:1,promotionsCount:{white:0,black:0},halfMoveClock:0};
-  return {...initial,positionCounts:{[positionHash(initial)]:1}};
+  return {...initial,initialPieces:pieces.map(piece=>({...piece,square:{...piece.square},initialSquare:{...piece.initialSquare}})),positionCounts:{[positionHash(initial)]:1}};
 }
 function at(state:GameState,square:Square){return state.pieces.find(piece=>same(piece.square,square));}
 export function positionHash(state:GameState):string{return `${state.turn}|${JSON.stringify(state.castling)}|${state.enPassant?`${key(state.enPassant.target)}:${state.enPassant.pawnId}`:'-'}|${state.pieces.map(piece=>`${piece.side}:${piece.power}:${key(piece.square)}`).sort().join(';')}`;}
@@ -92,7 +92,7 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   const ep=enPassantTarget(state,piece,move.to), captured=ep?at(state,state.enPassant!.captureSquare):at(state,move.to);const promotionRank=piece.power==='pawn'&&(move.to.row===0||move.to.row===7);const promotion=promotionRank?(move.promotion??'queen'):undefined;
   if(promotion&&!['queen','rook','bishop','knight'].includes(promotion))return null;
   const next=simulate(state,piece,move.to,promotion), nextTurn=other(state.turn), nextCastling=updateCastling(state.castling,piece,captured), nextEnPassant=doublePawn(piece,move.to)?{target:{row:(piece.square.row+move.to.row)/2,col:move.to.col},captureSquare:{...move.to},pawnId:piece.id}:undefined;
-  const recorded={...move,promotion}, halfMoveClock=piece.power==='pawn'||!!captured?0:(state.halfMoveClock??0)+1;
+  const recorded={...move,promotion,pieceId:piece.id,capturedPieceId:captured?.id,isCastling:castleTarget(piece,move.to),isEnPassant:!!ep}, halfMoveClock=piece.power==='pawn'||!!captured?0:(state.halfMoveClock??0)+1;
   const future={...next,turn:nextTurn,castling:nextCastling,enPassant:nextEnPassant,halfMoveClock};const moves=allLegalMoves(future,nextTurn), checked=inCheck(future,nextTurn);
   const previousCounts=state.positionCounts??{[positionHash(state)]:1}; const nextHash=positionHash(future); const positionCounts={...previousCounts,[nextHash]:(previousCounts[nextHash]??0)+1};
   const promotionsCount = state.promotionsCount ?? {white:0,black:0};
@@ -100,6 +100,12 @@ export function applyMove(state:GameState,move:Move):GameState|null{
   const checkmate=!moves.length&&checked; const insufficient=isInsufficientMaterial(future); const automaticDraw=!checkmate&&!insufficient&&(halfMoveClock>=100||positionCounts[nextHash]>=3); const status=moves.length&&!automaticDraw&&!insufficient?'playing':'over';
   const reason=checkmate?'Checkmate':insufficient?'Draw by Insufficient Material':automaticDraw?(halfMoveClock>=100?'Draw by 50-Move Rule':'Draw by Threefold Repetition'):status==='over'?'Stalemate':undefined;
   return {...future,lastMove:recorded,history:[...state.history,recorded],positionCounts,moveNumber:state.moveNumber+(state.turn==='black'?1:0),promotionsCount:{...promotionsCount,[state.turn]:promotionsCount[state.turn]+(promotion?1:0)},status,winner:checkmate?state.turn:undefined,reason};
+}
+
+/** Ends the authoritative game when the human forfeits. */
+export function forfeitGame(state:GameState,winner:Side):GameState {
+  if(state.status==='over') return state;
+  return {...state,status:'over',winner,reason:'Forfeit'};
 }
 
 export type BeliefState = Record<string, Power[] | number | Side> & { promotionsCount: number; observer: Side };
@@ -227,11 +233,13 @@ function mopUpBonus(state:GameState,forSide:Side){
 function kingRadiusExposurePenalty(state:GameState,forSide:Side){
   const enemy=other(forSide),theirKing=royal(state,enemy);
   if(!theirKing) return 0;
+  const nearby=state.pieces.filter(piece=>piece.side===forSide&&chebyshev(piece.square,theirKing.square)===1);
+  if(!nearby.length) return 0;
   let penalty=0;
-  for(const piece of state.pieces){
-    if(piece.side!==forSide||chebyshev(piece.square,theirKing.square)!==1) continue;
+  const theirKingMoves=legalMoves(state,theirKing);
+  for(const piece of nearby){
     const defended=isAttacked(state,piece.square,forSide);
-    const canCapture=legalMoves(state,theirKing).some(square=>same(square,piece.square));
+    const canCapture=theirKingMoves.some(square=>same(square,piece.square));
     if(canCapture&&!defended) penalty+=value[piece.power]*1.8;
   }
   return penalty;
@@ -247,7 +255,7 @@ function infiltratorPenalty(state:GameState,forSide:Side):number{
     if(!advanced) continue;
     // Base infiltration cost scaled by power value
     const depthFactor=forSide==='white'?(piece.square.row-3.5):(3.5-piece.square.row);
-    const base=value[piece.power]*0.18 + Math.max(0,depthFactor)*25;
+    const base=value[piece.power]*0.32 + Math.max(0,depthFactor)*35;
     // Extra if the infiltrator is currently safe (not under attack) – forces us to eliminate it
     const underFire=isAttacked(state,piece.square,forSide);
     penalty+=underFire?base*0.55:base*1.25;
@@ -381,30 +389,16 @@ export function search(state:GameState,depth:number,alpha=-Infinity,beta=Infinit
 export type AiSearchReport = { elapsedMs:number; completedDepth:number; nodes:number; ttHits:number; ttStores:number; quiescenceNodes:number; sampledWorlds:number; perWorldRootScores:number[]; finalCandidateScores:Array<{move:Move;perWorld:number[];average:number}>; selectedMove:Move|null; timedOut:boolean; rootCandidates:number };
 export type AiSearchOptions = { random?:RandomSource; timeBudgetMs?:number };
 
-/** Conservative public-information legality gate: a move is allowed only if no
- * possible hidden power can expose the AI royal piece after the move. */
-function robustRootLegal(publicState:PublicState,beliefs:BeliefState,move:Move):boolean{
-  const base=worldFromPublic(publicState), hidden=publicState.pieces.filter(piece=>piece.power===undefined);
-  for(const piece of hidden){
-    const candidates=(beliefs[piece.id] as Power[]|undefined)??allPowers;
-    for(const power of candidates){
-      const hypothetical={...base,pieces:base.pieces.filter(item=>item.power!==undefined||item.id===piece.id).map(item=>item.id===piece.id?{...item,power}:item)};
-      const next=applyMove(hypothetical,move);
-      if(next&&inCheck(next,beliefs.observer))return false;
-    }
-  }
-  return true;
-}
-
 export async function chooseAiMoveReport(publicState:PublicState,beliefs:BeliefState,options:AiSearchOptions={}):Promise<AiSearchReport> {
   const aiSide=beliefs.observer;
   const startTime=performance.now(), deadline=startTime+(options.timeBudgetMs??AI_SEARCH_TIME_BUDGET_MS);
   // Sample 3 worlds for better belief coverage; still fast enough with improved ordering
   const worlds=sampledWorlds(publicState,beliefs,3,options.random), candidates=new Map<string,Move>();
+  const lastOwnMove=publicState.history.length>=2?publicState.history[publicState.history.length-2]:undefined;
   const legalSets=worlds.map(world=>new Set(allLegalMoves(world,aiSide).map(move=>`${key(move.from)}-${key(move.to)}`)));
   for(const move of allLegalMoves(worlds[0],aiSide)){
     const id=`${key(move.from)}-${key(move.to)}`;
-    if(legalSets.every(set=>set.has(id))&&robustRootLegal(publicState,beliefs,move))candidates.set(id,move);
+    if(legalSets.every(set=>set.has(id)))candidates.set(id,move);
   }
   const rootOrderValue=(move:Move)=>Math.max(...worlds.map(world=>moveOrderValue(world,move)));
   const orderedCandidates=[...candidates.values()].sort((a,b)=>rootOrderValue(b)-rootOrderValue(a));
@@ -426,7 +420,8 @@ export async function chooseAiMoveReport(publicState:PublicState,beliefs:BeliefS
         if(context.timedOut) break;
       }
       if(context.timedOut) break;
-      const score=total/worlds.length;
+      let score=total/worlds.length;
+      if(lastOwnMove&&same(move.from,lastOwnMove.to)&&same(move.to,lastOwnMove.from)&&!isCaptureMove(worlds[0],move)) score-=150;
       depthScores.push({move,perWorld,average:score});
       if(score>depthScore){depthScore=score;depthBest=move;}
     }

@@ -27,7 +27,7 @@ const rights: CastlingRights = {
 };
 
 function piece(id: string, side: Side, power: Power, row: number, col: number, visual: Power = power, hasMoved = false): Piece {
-  return { id, side, power, visual, square: { row, col }, hasMoved };
+  return { id, side, power, visual, square: { row, col }, initialSquare: { row, col }, hasMoved };
 }
 
 function state(pieces: Piece[], turn: Side = 'white'): GameState {
