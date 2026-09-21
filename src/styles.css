@@ -33,7 +33,35 @@
 @media(min-width:981px){.gameover-layout .board-column{width:min(100%,calc(100svh - 350px))}}
 @media(max-width:980px){.gameover-screen{padding:0}.gameover-layout{min-height:0}.gameover-side-panel{max-height:none;overflow:visible}.gameover-history-panel{max-height:300px}.gameover-actions{padding-bottom:24px}}
 @media(max-width:700px){.gameover-layout{padding:18px 0}.gameover-board-column{max-width:100vw}.gameover-side-panel{border-radius:0}.gameover-side-panel .side-heading{padding:18px 16px}.gameover-summary{padding-inline:16px}.gameover-move{padding-inline:16px}.gameover-actions{padding-inline:16px}.gameplay-controls{margin-inline:16px}}
+.singleplayer-side-panel{display:flex!important}
+@media(max-width:980px){
+  .app-shell .game-layout>.singleplayer-side-panel{display:flex!important;width:100%;margin-top:18px;min-height:0;max-height:none;overflow:visible}
+  .app-shell .top-status{font-size:0;display:flex;align-items:center;gap:7px}
+  .app-shell .top-status::after{content:var(--single-game-timer);font-size:10px;letter-spacing:.16em;color:#75d1c6;white-space:nowrap}
+  .gameover-layout .gameover-side-panel{display:flex!important;width:100%;margin-top:18px;min-height:0;max-height:none;overflow:visible}
+  .gameover-layout{display:grid;grid-template-columns:minmax(0,1fr);padding-inline:0}
+  .gameover-layout .gameover-board-column{width:100%;max-width:calc(100vw - 40px);margin-inline:auto}
+}
+@media(min-width:981px){
+  .gameover-layout{grid-template-columns:minmax(0,680px) minmax(300px,380px);--gameover-hero-block:clamp(130px,18svh,210px);--gameover-board-size:min(680px,calc(100svh - var(--gameover-hero-block) - 48px))}
+  .gameover-layout .gameover-board-column{width:min(100%,var(--gameover-board-size));max-height:var(--gameover-board-size)}
+  .gameover-layout .board-wrap{max-height:var(--gameover-board-size)}
+  .gameover-layout .gameover-side-panel{height:var(--gameover-board-size);max-height:none}
+}
 .gameover-layout{max-width:1160px}
+.gameover-screen .result-hero>.eyebrow{display:none}
+@media(min-width:981px){
+  .gameover-screen{overflow:hidden;min-height:100svh;padding:0}
+  .gameover-screen .result-hero{padding:10px 24px 12px}
+  .gameover-screen .result-hero h1{font-size:clamp(48px,5.5vw,82px);line-height:.95}
+  .gameover-screen .result-hero p:last-child{margin-top:6px;font-size:clamp(16px,1.5vw,22px)}
+  .gameover-layout{width:calc(100% - 64px);max-width:1600px;padding:24px 0;grid-template-columns:minmax(0,1fr) clamp(380px,28vw,460px);gap:30px;--gameover-result-space:clamp(100px,16svh,140px);--gameover-board-size:min(100%,calc(100svh - var(--gameover-result-space) - 72px))}
+  .gameover-layout .gameover-board-column{width:min(100%,var(--gameover-board-size));max-width:none;justify-self:center}
+  .gameover-layout .gameover-side-panel{width:100%;height:var(--gameover-board-size);max-height:none;min-height:0}
+  .gameover-layout .gameover-history-panel{flex:1;min-height:0;max-height:none!important;overflow:hidden}
+  .gameover-layout .gameover-history-panel .history-scroll-container{flex:1;min-height:0;max-height:none;overflow-y:auto}
+  .gameover-layout .gameover-actions{flex:none}
+}
 .gameover-side-panel{width:100%}
 .gameover-history-panel{max-height:none!important}
 @media(min-width:981px){.gameover-layout{grid-template-columns:minmax(0,680px) minmax(300px,380px)}.gameover-layout{--gameover-board-size:min(100%,calc(100svh - 290px))}}
