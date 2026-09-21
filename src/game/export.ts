@@ -1,4 +1,4 @@
-import type { AiSearchReport, GameState, Move, Piece, Side, Square } from './engine';
+import type { AiSearchReport, GameState, Move, Piece, Power, Side, Square } from './engine';
 
 const files = 'ABCDEFGH';
 const name = (square: Square) => `${files[square.col]}${8 - square.row}`;
@@ -7,11 +7,44 @@ const pieceForMove = (move: Move, state: GameState) => state.initialPieces?.find
 
 export type ExportOptions = { humanSide: Side; aiSide: Side; telemetry?: Array<AiSearchReport & { ply: number }> };
 
+export type GameOverBoardView = 'reveal' | 'final';
+
+export interface GameOverDisplayPiece {
+  id: string;
+  side: Side;
+  square: Square;
+  glyphType: Power;
+  visual: Power;
+  power: Power;
+}
+
 /** Returns the complete initialized arrangement for the end-game reveal. */
 export function revealPieces(state: GameState): Piece[] {
   return (state.initialPieces ?? state.pieces).map(piece => ({
     ...piece,
     square: { ...piece.initialSquare },
+  }));
+}
+
+/** Returns pieces positioned and typed for the chosen Game Over board view. */
+export function getGameOverBoardPieces(state: GameState, view: GameOverBoardView): GameOverDisplayPiece[] {
+  if (view === 'reveal') {
+    return revealPieces(state).map(piece => ({
+      id: piece.id,
+      side: piece.side,
+      square: { ...piece.square },
+      glyphType: piece.power,
+      visual: piece.visual,
+      power: piece.power,
+    }));
+  }
+  return state.pieces.map(piece => ({
+    id: piece.id,
+    side: piece.side,
+    square: { ...piece.square },
+    glyphType: piece.visual,
+    visual: piece.visual,
+    power: piece.power,
   }));
 }
 

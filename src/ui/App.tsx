@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { allLegalMoves, applyMove, createBeliefs, createGame, forfeitGame, inCheck, legalMoves, toPublicState, updateBeliefs, type AiSearchReport, type BeliefState, type GameState, type Move, type Piece, type Power, type Side } from '../game/engine';
-import { downloadGameExport, revealPieces } from '../game/export';
+import { downloadGameExport, getGameOverBoardPieces, type GameOverBoardView } from '../game/export';
 import { MultiplayerGame } from './MultiplayerGame';
 
 const glyph: Record<string,string> = { king:'♔', queen:'♕', rook:'♖', bishop:'♗', knight:'♘', pawn:'♙' };
@@ -52,22 +52,14 @@ export function App() {
   if(screen==='landing')return <main className="landing-screen"><section className="landing-card"><div className="brand-mark">♞</div><p className="eyebrow">Human versus AI · Hidden powers</p><h1>Schrödinger&apos;s<br/><em>Chess</em></h1><p className="landing-copy">Every piece looks familiar.<br/>Nothing moves the way you expect.</p><div className="mode-buttons"><button className="primary-button" onClick={start}>SINGLEPLAYER <span>→</span></button><button className="secondary-button" onClick={()=>setScreen('multiplayer')}>MULTIPLAYER <span>↔</span></button></div></section></main>;
   if(screen==='multiplayer')return <MultiplayerGame onExit={exitToMenu}/>;
   if(!game)return null;
-  if(screen==='over')return <GameOverReveal3 game={game} playerSide={playerSide} onPlay={start} onExport={()=>downloadGameExport(game,{humanSide:playerSide,aiSide:other(playerSide),telemetry})}/>;
+  if(screen==='over')return <GameOverReveal game={game} playerSide={playerSide} onPlay={start} onExport={()=>downloadGameExport(game,{humanSide:playerSide,aiSide:other(playerSide),telemetry})}/>;
   const aiSide=other(playerSide); const captured=initialPieces.filter(initial=>!game.pieces.some(piece=>piece.id===initial.id)); const capturedBy=(side:Side)=>captured.filter(piece=>piece.side===side); const selectedId=selected?.id;
   return <main className="app-shell"><header className="topbar"><button className="mini-brand" onClick={exitToMenu}>♞ <span>Schrödinger&apos;s Chess</span></button><div className="top-status"><span className="live-dot"/> LIVE GAME</div><button className="icon-button" onClick={exitToMenu}>×</button></header><div className="game-layout"><section className="board-column"><div className="mobile-title"><span>{game.turn===playerSide?'Your turn':'AI is thinking'}</span><small>Game {game.moveNumber}</small></div><PlayerBar side={aiSide} name="Schrödinger AI" captured={capturedBy(playerSide)} thinking={thinking}/><div className="board-wrap"><div className="chess-board">{Array.from({length:64},(_,index)=>{const displayRow=Math.floor(index/8),displayCol=index%8,row=playerSide==='white'?displayRow:7-displayRow,col=playerSide==='white'?displayCol:7-displayCol,destination={row,col},piece=game.pieces.find(item=>same(item.square,destination)),isMove=moves.some(square=>same(square,destination)),isLast=!!game.lastMove&&(same(game.lastMove.from,destination)||same(game.lastMove.to,destination)),isCheck=!!(piece&&piece.side===playerSide&&piece.power==='king'&&inCheck(game,playerSide)),arrived=!!(piece&&game.lastMove&&same(piece.square,game.lastMove.to)),isSelected=!!(selectedId&&piece&&selectedId===piece.id);return <button key={index} className={`square ${(displayRow+displayCol)%2?'dark':'light'} ${isSelected?'selected':''} ${isLast?'last-move':''} ${isCheck?'in-check':''}`} onClick={()=>clickSquare(row,col)} aria-label={squareName(destination)}>{piece&&<span key={`${piece.id}-${arrived?animation:0}`} className={`piece ${piece.side} ${arrived&&animation?'piece-arrival':''}`}>{glyph[piece.visual]}</span>}{isMove&&<span className={piece?'capture-ring':'move-dot'}/>}<span className="coord file">{displayRow===7&&files[col]}</span><span className="coord rank">{displayCol===0&&8-row}</span></button>;})}</div></div><PlayerBar side={playerSide} name="You" captured={capturedBy(aiSide)} thinking={false}/></section><aside className="side-panel"><div className="side-heading"><div><span className="eyebrow">Game in progress</span><h2>{game.turn===playerSide?'Your turn':'AI turn'}</h2></div><div className="turn-pill">{formatTime(elapsed)}</div></div><section className="history-panel"><div className="panel-title">MOVE HISTORY</div><div className="history-scroll-container" ref={historyScrollRef}><table className="history-table"><thead><tr><th>#</th><th>White</th><th>Black</th></tr></thead><tbody>{Array.from({length:Math.ceil(game.history.length/2)},(_,turn)=><tr key={turn}><td>{turn+1}</td><td>{game.history[turn*2]?`${squareName(game.history[turn*2].from)} → ${squareName(game.history[turn*2].to)}`:''}</td><td>{game.history[turn*2+1]?`${squareName(game.history[turn*2+1].from)} → ${squareName(game.history[turn*2+1].to)}`:''}</td></tr>)}</tbody></table>{game.history.length===0&&<p className="empty-panel">Game begins</p>}</div></section><div className="hint-card"><span className="hint-icon">◌</span><div><strong>Trust your eyes less.</strong><p>Your pieces know their powers. The opponent&apos;s pieces are a mystery.</p></div></div><button className="resign-button" onClick={exitToMenu}>EXIT GAME</button></aside></div>{promotionMove&&<div className="promotion-modal" role="dialog" aria-label="Choose promotion power"><div className="promotion-card"><span className="eyebrow">Promotion</span><h2>Choose a movement power</h2><div className="promotion-options">{(['queen','rook','bishop','knight'] as Power[]).map(power=><button key={power} onClick={()=>choosePromotion(power)}>{glyph[power]}<span>{power}</span></button>)}</div></div></div>}</main>;
 }
 
 function PlayerBar({side,name,captured,thinking}:{side:Side;name:string;captured:Piece[];thinking:boolean}){const human=name==='You';return <div className={`player-bar ${human?'bottom':''}`}><div className={`avatar ${human?'human-avatar':'ai-avatar'}`}>{human?'YOU':'AI'}</div><div><strong>{name}</strong>{thinking&&<span>Thinking…</span>}{human&&<span>Your move</span>}</div><div className={`inline-captured ${side}`} aria-label={`${name} captured pieces`}>{captured.map(piece=><span key={piece.id}>{glyph[piece.visual]}</span>)}</div>{!human&&<div className="clock">{thinking?'…':'—'}</div>}</div>;}
-function GameOver({game,playerSide,onPlay}:{game:GameState;playerSide:Side;onPlay:()=>void}){return <main className="gameover-screen"><section className="gameover-card"><div className="result-icon">{game.winner?'♛':'='}</div><p className="eyebrow">Game complete</p><h1>{game.winner?'Checkmate':'Draw'}</h1><p className="result-copy">{game.reason??(game.winner===playerSide?'You win.':game.winner?'The AI wins.':'No royal piece can move.')}</p><div className="mapping"><div className="mapping-head"><span>ALL PIECES</span><span>ACTUAL POWER</span></div>{game.pieces.map(piece=><div className="mapping-row" key={piece.id}><span><i className={`piece-mini ${piece.side}`}>{glyph[piece.visual]}</i>{piece.side===playerSide?'Your':'AI'} {piece.visual}</span><b>{powerLabel[piece.power]}</b></div>)}</div><button className="primary-button" onClick={onPlay}>PLAY AGAIN <span>→</span></button></section></main>;}
-function GameOverReveal({game,playerSide,onPlay,onExport}:{game:GameState;playerSide:Side;onPlay:()=>void;onExport:()=>void}){return <main className="gameover-screen"><section className="gameover-card gameover-wide"><div className="result-icon">♛</div><p className="eyebrow">Game complete</p><h1>{game.winner?(game.winner===playerSide?'You win':'AI wins'):'Draw'}</h1><p className="result-copy"><strong>{game.reason}</strong><br/>Human: {playerSide} · AI: {other(playerSide)}</p><RevealBoard game={game} playerSide={playerSide}/><section className="mapping gameover-history"><div className="mapping-head"><span>MOVE HISTORY</span><span>{game.history.length} PLIES</span></div><div className="gameover-history-scroll">{game.history.length?game.history.map((move,index)=><div className="mapping-row" key={`${index}-${move.from.row}-${move.from.col}`}><span>{index+1}. {squareName(move.from)} → {squareName(move.to)}{move.capturedPieceId?' · Capture':''}{move.promotion?` · Promote ${powerLabel[move.promotion]}`:''}</span><b>{move.pieceId??'piece'}</b></div>):<p className="empty-panel">No moves recorded.</p>}</div></section><div className="gameover-actions"><button className="primary-button" onClick={onExport}>EXPORT GAME</button><button className="secondary-button" onClick={onPlay}>START NEW GAME <span>→</span></button></div></section></main>;}
-function RevealBoard({game,playerSide}:{game:GameState;playerSide:Side}){return <div className="board-wrap reveal-board-wrap"><div className="chess-board reveal-board">{Array.from({length:64},(_,index)=>{const displayRow=Math.floor(index/8),displayCol=index%8,row=playerSide==='white'?displayRow:7-displayRow,col=playerSide==='white'?displayCol:7-displayCol,piece=game.pieces.find(item=>same(item.square,{row,col}));return <div key={index} className={`square reveal-square ${(displayRow+displayCol)%2?'dark':'light'}`}>{piece&&<><span className={`reveal-piece piece ${piece.side}`}>{glyph[piece.power]}</span><span className="reveal-label">{piece.power.toUpperCase()}<small>{piece.visual.toUpperCase()} original</small></span></>}</div>;})}</div></div>;}
 
-function GameOverReveal2({game,playerSide,onPlay,onExport}:{game:GameState;playerSide:Side;onPlay:()=>void;onExport:()=>void}){
-  const aiSide=other(playerSide);
-  return <main className="gameover-screen"><div className="game-layout gameover-layout"><section className="board-column gameover-board-column"><div className="mobile-title"><span>Game complete</span><small>{game.reason}</small></div><RevealBoard game={game} playerSide={playerSide}/></section><aside className="side-panel gameover-side-panel"><div className="side-heading"><div><span className="eyebrow">Game complete</span><h2>{game.winner?(game.winner===playerSide?'You win':'AI wins'):'Draw'}</h2></div><div className="turn-pill">{game.reason}</div></div><div className="gameover-summary"><p>Human: <strong>{playerSide}</strong></p><p>AI: <strong>{aiSide}</strong></p><p>End reason: <strong>{game.reason??'—'}</strong></p></div><section className="history-panel gameover-history-panel"><div className="panel-title">MOVE HISTORY</div><div className="history-scroll-container">{game.history.length?game.history.map((move,index)=><div className="gameover-move" key={`${index}-${move.from.row}-${move.from.col}`}><span>{index+1}. {Math.abs(move.to.col-move.from.col)===2?'Castling':`${squareName(move.from)} → ${squareName(move.to)}`}</span><small>{move.capturedPieceId?'Capture · ':''}{move.promotion?`Promote ${powerLabel[move.promotion]}`:''}</small></div>):<p className="empty-panel">No moves recorded.</p>}</div></section><div className="gameover-actions"><button className="primary-button" onClick={onExport}>EXPORT GAME</button><button className="secondary-button" onClick={onPlay}>START NEW GAME <span>→</span></button></div></aside></div></main>;
-}
-
-function resultTitle(game:GameState):string {
+export function resultTitle(game:GameState):string {
   if(game.reason==='Checkmate') return 'CHECKMATE';
   if(game.reason==='King captured') return 'KING CAPTURED';
   if(game.reason==='Forfeit') return 'FORFEIT';
@@ -75,7 +67,7 @@ function resultTitle(game:GameState):string {
   return game.status==='over' ? 'GAME OVER' : 'GAME IN PROGRESS';
 }
 
-function resultMessage(game:GameState):string {
+export function resultMessage(game:GameState):string {
   if(game.winner) {
     const reason=game.reason==='King captured'?'king capture':(game.reason ?? 'victory').toLowerCase();
     return `${game.winner === 'white' ? 'White' : 'Black'} won by ${reason}`;
@@ -83,14 +75,147 @@ function resultMessage(game:GameState):string {
   return game.reason ?? 'Draw';
 }
 
-function GameOverReveal3({game,playerSide,onPlay,onExport}:{game:GameState;playerSide:Side;onPlay:()=>void;onExport:()=>void}){
-  const aiSide=other(playerSide);
-  return <main className="gameover-screen"><section className="result-hero"><p className="eyebrow">Game result</p><h1>{resultTitle(game)}</h1><p>{resultMessage(game)}</p></section><div className="game-layout gameover-layout"><section className="board-column gameover-board-column"><div className="mobile-title"><span>Hidden-power reveal</span><small>Original arrangement</small></div><RevealBoard3 game={game} playerSide={playerSide}/></section><aside className="side-panel gameover-side-panel"><div className="gameover-summary"><p>Human: <strong>{playerSide}</strong></p><p>AI: <strong>{aiSide}</strong></p></div><section className="history-panel gameover-history-panel"><div className="panel-title">MOVE HISTORY</div><div className="history-scroll-container">{game.history.length?game.history.map((move,index)=><div className="gameover-move" key={`${index}-${move.from.row}-${move.from.col}`}><span>{index+1}. {squareName(move.from)} → {squareName(move.to)}</span><small>{move.capturedPieceId?'Capture · ':''}{move.isCastling?'Castling · ':''}{move.isEnPassant?'En passant · ':''}{move.promotion?`Promote ${powerLabel[move.promotion]}`:''}</small></div>):<p className="empty-panel">No moves recorded.</p>}</div></section><div className="gameover-actions"><button className="primary-button" onClick={onExport}>EXPORT GAME</button><button className="secondary-button" onClick={onPlay}>START NEW GAME <span>→</span></button></div></aside></div></main>;
+export function GameOverReveal({
+  game,
+  playerSide,
+  onPlay,
+  onExport,
+}: {
+  game: GameState;
+  playerSide: Side;
+  onPlay: () => void;
+  onExport: () => void;
+}) {
+  const [view, setView] = useState<GameOverBoardView>('reveal');
+  const aiSide = other(playerSide);
+
+  return (
+    <main className="gameover-screen">
+      <section className="result-hero">
+        <h1>{resultTitle(game)}</h1>
+        <p>{resultMessage(game)}</p>
+      </section>
+      <div className="game-layout gameover-layout">
+        <section className="board-column gameover-board-column">
+          <div className="gameover-toggle-wrap">
+            <div className="view-toggle" role="tablist" aria-label="Board view selection">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'reveal'}
+                className={`toggle-option ${view === 'reveal' ? 'active' : ''}`}
+                onClick={() => setView('reveal')}
+              >
+                ORIGINAL REVEAL
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'final'}
+                className={`toggle-option ${view === 'final' ? 'active' : ''}`}
+                onClick={() => setView('final')}
+              >
+                FINAL POSITION
+              </button>
+            </div>
+          </div>
+          <div className="gameover-board-stage">
+            <GameOverBoard game={game} playerSide={playerSide} view={view} />
+          </div>
+        </section>
+        <aside className="side-panel gameover-side-panel">
+          <div className="gameover-summary">
+            <p>Human: <strong>{playerSide}</strong></p>
+            <p>AI: <strong>{aiSide}</strong></p>
+          </div>
+          <section className="history-panel gameover-history-panel">
+            <div className="panel-title">MOVE HISTORY</div>
+            <div className="history-scroll-container">
+              {game.history.length ? (
+                game.history.map((move, index) => (
+                  <div className="gameover-move" key={`${index}-${move.from.row}-${move.from.col}`}>
+                    <span>
+                      {index + 1}. {squareName(move.from)} → {squareName(move.to)}
+                    </span>
+                    <small>
+                      {move.capturedPieceId ? 'Capture · ' : ''}
+                      {move.isCastling ? 'Castling · ' : ''}
+                      {move.isEnPassant ? 'En passant · ' : ''}
+                      {move.promotion ? `Promote ${powerLabel[move.promotion]}` : ''}
+                    </small>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-panel">No moves recorded.</p>
+              )}
+            </div>
+          </section>
+          <div className="gameover-actions">
+            <button type="button" className="primary-button" onClick={onExport}>
+              EXPORT GAME
+            </button>
+            <button type="button" className="secondary-button" onClick={onPlay}>
+              START NEW GAME <span>→</span>
+            </button>
+          </div>
+        </aside>
+      </div>
+    </main>
+  );
 }
 
-function RevealBoard3({game,playerSide}:{game:GameState;playerSide:Side}){
-  const pieces=revealPieces(game);
-  return <div className="board-wrap reveal-board-wrap"><div className="chess-board reveal-board">{Array.from({length:64},(_,index)=>{const displayRow=Math.floor(index/8),displayCol=index%8,row=playerSide==='white'?displayRow:7-displayRow,col=playerSide==='white'?displayCol:7-displayCol,piece=pieces.find(item=>same(item.square,{row,col}));return <div key={index} className={`square reveal-square ${(displayRow+displayCol)%2?'dark':'light'}`}>{piece&&<span className={`piece ${piece.side} reveal-piece`}>{glyph[piece.power]}</span>}</div>;})}</div></div>;
+export function GameOverBoard({
+  game,
+  playerSide,
+  view,
+}: {
+  game: GameState;
+  playerSide: Side;
+  view: GameOverBoardView;
+}) {
+  const pieces = getGameOverBoardPieces(game, view);
+
+  return (
+    <div className="board-wrap reveal-board-wrap">
+      <div className="chess-board reveal-board">
+        {Array.from({ length: 64 }, (_, index) => {
+          const displayRow = Math.floor(index / 8);
+          const displayCol = index % 8;
+          const row = playerSide === 'white' ? displayRow : 7 - displayRow;
+          const col = playerSide === 'white' ? displayCol : 7 - displayCol;
+          const destination = { row, col };
+          const piece = pieces.find(item => same(item.square, destination));
+          const isDark = (displayRow + displayCol) % 2 === 1;
+          const isLast = view === 'final' && !!game.lastMove && (same(game.lastMove.from, destination) || same(game.lastMove.to, destination));
+
+          return (
+            <div
+              key={index}
+              className={`square reveal-square ${isDark ? 'dark' : 'light'} ${isLast ? 'last-move' : ''}`}
+              aria-label={
+                piece
+                  ? view === 'reveal'
+                    ? `${piece.side} ${piece.power} (originally ${piece.visual}) on ${squareName(destination)}`
+                    : `${piece.side} ${piece.visual} on ${squareName(destination)}`
+                  : squareName(destination)
+              }
+            >
+              {piece && (
+                <span className={`piece ${piece.side} ${view === 'reveal' ? 'reveal-piece' : ''}`}>
+                  {glyph[piece.glyphType]}
+                </span>
+              )}
+              <span className="coord file">{displayRow === 7 && files[col]}</span>
+              <span className="coord rank">{displayCol === 0 && 8 - row}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
+
+export const GameOverReveal3 = GameOverReveal;
+export const RevealBoard3 = GameOverBoard;
 
 export default App;
